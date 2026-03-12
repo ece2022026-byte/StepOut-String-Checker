@@ -28,14 +28,15 @@ ACTION_RULES = {
     "GT": {"start": True, "end": True, "notes": {"0", "1", "2", "3"}},
     # Special actions
     "CN": {"start": True, "end": True, "notes": {"0", "1", "2", "3", "4"}},
+    "OG": {"start": True, "end": True, "notes": {"1"}},
     "OFF": {"start": True, "end": False, "notes": {"1"}},
     "F": {"start": True, "end": False, "notes": {"1"}},
     "YC": {"start": True, "end": False, "notes": {"1"}},
     "RC": {"start": True, "end": False, "notes": {"1"}},
     "PK": {"start": True, "end": True, "notes": {"0", "1", "2", "3", "4"}},
-    "FK": {"start": True, "end": True, "notes": {"0", "1", "2", "3", "4"}},
+    "FK": {"start": True, "end": True, "notes": {"1"}},
     "HB": {"start": True, "end": False, "notes": {"1"}},
-    "GK": {"start": True, "end": True, "notes": {"0", "1", "2", "3"}},
+    "GK": {"start": True, "end": True, "notes": {"1"}},
     "THW": {"start": True, "end": True, "notes": {"0", "1", "2", "3"}},
     # Receiver actions
     "XSP": {"start": True, "end": False, "notes": {"0", "1", "2", "3"}},
@@ -75,6 +76,7 @@ ACTION_DISPLAY_NAMES = {
     "GH": "Goalkeeper Handling",
     "GT": "Goalkeeper Throw",
     "CN": "Corner",
+    "OG": "Own Goal",
     "OFF": "Offside",
     "F": "Foul",
     "YC": "Yellow Card",
@@ -171,19 +173,21 @@ def _validate_special_dependencies(parsed: dict, errors: dict):
     note = parsed["attribute"]
     special = parsed["special_action"]
 
-    if special in {"F", "YC", "RC"} and not (action in {"ST", "SL", "GD", "AD"} and note == "0"):
-        _add_error(
-            errors,
-            "rule_special_action",
-            "F/YC/RC allowed with ST-0, SL-0, GD-0, AD-0",
-            f"{action}-{note} with {special}",
-        )
+    if special in {"F", "YC", "RC"}:
+        allowed_foul_combos = {("ST", "0"), ("SL", "0"), ("GD", "0"), ("AD", "0")}
+        if (action, note) not in allowed_foul_combos:
+            _add_error(
+                errors,
+                "rule_special_action",
+                "F/YC/RC allowed with ST-0, SL-0, GD-0, AD-0",
+                f"{action}-{note} with {special}",
+            )
 
     if special == "PK" and action not in {"CS"}:
         _add_error(errors, "rule_special_action", "PK only with CS action", f"{action}-{note}")
 
-    if special == "FK" and action not in {"SP", "LP", "TB", "C", "LS"}:
-        _add_error(errors, "rule_special_action", "FK with passing actions or LS", action)
+    if special == "FK" and action not in {"SP", "LP", "TB", "C", "LS", "FK"}:
+        _add_error(errors, "rule_special_action", "FK with passing actions/LS/FK", action)
 
     if special == "CN" and action not in {"SP", "LP", "TB", "C", "LS", "CN"}:
         _add_error(errors, "rule_special_action", "CN with passing actions/LS/CN", action)
@@ -196,6 +200,9 @@ def _validate_special_dependencies(parsed: dict, errors: dict):
 
     if special == "HB" and action != "HB":
         _add_error(errors, "rule_special_action", "HB special should use HB action", action)
+
+    if special == "OG" and action != "OG":
+        _add_error(errors, "rule_special_action", "OG special should use OG action", action)
 
 
 def validate_rulebook(parsed: dict) -> dict:

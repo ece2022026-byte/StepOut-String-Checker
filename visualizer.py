@@ -39,7 +39,7 @@ def generate_pie_chart(correct, missed, extra, mismatch):
 
 
 def generate_timeline_chart(mismatched_details):
-    """Returns 5-minute timeline buckets as data for frontend Chart.js."""
+    """Returns 5-minute timeline buckets as data for the frontend charts."""
     if not mismatched_details:
         return {"labels": [], "values": []}
 

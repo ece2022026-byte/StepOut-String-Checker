@@ -32,8 +32,8 @@ def evaluate():
             time_tolerance=TIME_TOLERANCE_MS
         )
         
-        # 4. Generate All 3 Visualizations (Synced with your requested keys)
-        # Ensure your visualizer.py has these exact function names
+        # 4. Generate All 3 Visualizations (Synced with requested keys)
+       
         result['field_chart'] = visualizer.generate_error_chart(result.get('field_errors'))
         
         result['pie_chart'] = visualizer.generate_pie_chart(

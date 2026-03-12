@@ -3,6 +3,9 @@ from parser import normalize, parse_string, validate_rulebook, ACTION_RULES, ACT
 
 PASSING_ACTIONS = {"SP", "LP", "TB", "C", "XSP", "XLP", "XTB", "XC"}
 RECEIVER_ACTIONS = {a for a in ACTION_RULES.keys() if a.startswith("X")}
+SPECIAL_PRESENCE_ACTIONS = {"FK", "OG", "CN", "GK", "F", "YC", "RC", "OFF", "HB", "PK"}
+SPECIAL_NOTE_KEY = "__PRESENCE__"
+TEAM_BUCKETS = ("A", "B", "OTHER")
 KEY_ACTION_SECTIONS = [
     {
         "id": "passing",
@@ -23,6 +26,16 @@ KEY_ACTION_SECTIONS = [
 KEY_ACTION_NOTES = [item for section in KEY_ACTION_SECTIONS for item in section["items"]]
 
 
+def _note_bucket_for_breakdown(action, note):
+    """
+    Special actions are presence markers, so collapse them into one bucket
+    instead of showing synthetic keys like FK-0/FK-1.
+    """
+    if action in SPECIAL_PRESENCE_ACTIONS:
+        return SPECIAL_NOTE_KEY
+    return str(note)
+
+
 def _is_countable_action(parsed, action):
     """
     Business rule:
@@ -31,6 +44,42 @@ def _is_countable_action(parsed, action):
     if action in {"GD", "AD"}:
         return str(parsed.get("foot", "")).upper() in {"R", "L"}
     return True
+
+
+def _sort_note_keys(note_keys):
+    return sorted(
+        [str(note) for note in note_keys],
+        key=lambda value: (0, int(value)) if str(value).isdigit() else (1, str(value)),
+    )
+
+
+def _valid_note_buckets_for_action(action):
+    if action in SPECIAL_PRESENCE_ACTIONS:
+        return [SPECIAL_NOTE_KEY]
+    rule = ACTION_RULES.get(action, {})
+    return _sort_note_keys(rule.get("notes", []))
+
+
+def _init_note_count_map(action):
+    return {note: 0 for note in _valid_note_buckets_for_action(action)}
+
+
+def _counted_actions_for_string(parsed):
+    counted = []
+    action = parsed.get("action")
+    if action in ACTION_RULES and _is_countable_action(parsed, action):
+        counted.append(action)
+
+    special_action = parsed.get("special_action")
+    if (
+        special_action in ACTION_RULES
+        and special_action != "X"
+        and special_action != action
+        and _is_countable_action(parsed, special_action)
+    ):
+        counted.append(special_action)
+
+    return counted
 
 
 def _build_attribute_counts(strings, strict_validation=False):
@@ -61,18 +110,8 @@ def _build_attribute_counts(strings, strict_validation=False):
                 skipped += 1
                 continue
 
-        if _is_countable_action(parsed, action):
-            counts[action] += 1
-
-        # Some key attributes are commonly encoded in special_action (FK/CN/F/GK).
-        special_action = parsed.get("special_action")
-        if (
-            special_action in counts
-            and special_action != "X"
-            and special_action != action
-            and _is_countable_action(parsed, special_action)
-        ):
-            counts[special_action] += 1
+        for counted_action in _counted_actions_for_string(parsed):
+            counts[counted_action] += 1
 
     return counts, skipped
 
@@ -84,47 +123,88 @@ def _build_attribute_note_breakdown(gold_list, trainee_list):
       breakdown["CS"]["gold"] -> {"0": 3, "2": 4, "3": 2, "4": 1}
     """
     labels = list(ACTION_RULES.keys())
-    breakdown = {action: {"gold": {}, "trainee": {}} for action in labels}
+    breakdown = {
+        action: {
+            "gold": _init_note_count_map(action),
+            "trainee": _init_note_count_map(action),
+        }
+        for action in labels
+    }
 
     for raw in gold_list:
         parsed = _safe_parse(raw)
         if not parsed:
             continue
-        action = parsed.get("action")
-        if action not in breakdown:
-            continue
-        if not _is_countable_action(parsed, action):
-            continue
         note = str(parsed.get("attribute", ""))
-        breakdown[action]["gold"][note] = breakdown[action]["gold"].get(note, 0) + 1
-        special_action = parsed.get("special_action")
-        if (
-            special_action in breakdown
-            and special_action != "X"
-            and special_action != action
-            and _is_countable_action(parsed, special_action)
-        ):
-            breakdown[special_action]["gold"][note] = breakdown[special_action]["gold"].get(note, 0) + 1
+        for action in _counted_actions_for_string(parsed):
+            if action not in breakdown:
+                continue
+            action_bucket = _note_bucket_for_breakdown(action, note)
+            breakdown[action]["gold"][action_bucket] = breakdown[action]["gold"].get(action_bucket, 0) + 1
 
     for raw in trainee_list:
         parsed = _safe_parse(raw)
         if not parsed:
             continue
-        action = parsed.get("action")
-        if action not in breakdown:
-            continue
-        if not _is_countable_action(parsed, action):
-            continue
         note = str(parsed.get("attribute", ""))
-        breakdown[action]["trainee"][note] = breakdown[action]["trainee"].get(note, 0) + 1
-        special_action = parsed.get("special_action")
-        if (
-            special_action in breakdown
-            and special_action != "X"
-            and special_action != action
-            and _is_countable_action(parsed, special_action)
-        ):
-            breakdown[special_action]["trainee"][note] = breakdown[special_action]["trainee"].get(note, 0) + 1
+        for action in _counted_actions_for_string(parsed):
+            if action not in breakdown:
+                continue
+            action_bucket = _note_bucket_for_breakdown(action, note)
+            breakdown[action]["trainee"][action_bucket] = breakdown[action]["trainee"].get(action_bucket, 0) + 1
+
+    return breakdown
+
+
+def _build_attribute_team_breakdown(gold_list, trainee_list):
+    breakdown = {
+        action: {
+            "gold": {team: 0 for team in TEAM_BUCKETS},
+            "trainee": {team: 0 for team in TEAM_BUCKETS},
+        }
+        for action in ACTION_RULES.keys()
+    }
+
+    for source_name, source_list in (("gold", gold_list), ("trainee", trainee_list)):
+        for raw in source_list:
+            parsed = _safe_parse(raw)
+            if not parsed:
+                continue
+
+            team = str(parsed.get("team", "")).upper()
+            team_bucket = team if team in {"A", "B"} else "OTHER"
+            for action in _counted_actions_for_string(parsed):
+                if action not in breakdown:
+                    continue
+                breakdown[action][source_name][team_bucket] += 1
+
+    return breakdown
+
+
+def _build_attribute_team_note_breakdown(gold_list, trainee_list):
+    breakdown = {
+        action: {
+            "gold": {team: _init_note_count_map(action).copy() for team in TEAM_BUCKETS},
+            "trainee": {team: _init_note_count_map(action).copy() for team in TEAM_BUCKETS},
+        }
+        for action in ACTION_RULES.keys()
+    }
+
+    for source_name, source_list in (("gold", gold_list), ("trainee", trainee_list)):
+        for raw in source_list:
+            parsed = _safe_parse(raw)
+            if not parsed:
+                continue
+
+            team = str(parsed.get("team", "")).upper()
+            team_bucket = team if team in {"A", "B"} else "OTHER"
+            note = str(parsed.get("attribute", ""))
+
+            for action in _counted_actions_for_string(parsed):
+                if action not in breakdown:
+                    continue
+                note_bucket = _note_bucket_for_breakdown(action, note)
+                breakdown[action][source_name][team_bucket][note_bucket] = breakdown[action][source_name][team_bucket].get(note_bucket, 0) + 1
 
     return breakdown
 
@@ -572,6 +652,8 @@ def evaluate_match(gold_list, trainee_list, time_tolerance=2000):
     trainee_attribute_counts, trainee_skipped = _build_attribute_counts(trainee_list, strict_validation=False)
     trainee_attribute_counts_valid, trainee_skipped_valid = _build_attribute_counts(trainee_list, strict_validation=True)
     attribute_note_breakdown = _build_attribute_note_breakdown(gold_list, trainee_list)
+    attribute_team_breakdown = _build_attribute_team_breakdown(gold_list, trainee_list)
+    attribute_team_note_breakdown = _build_attribute_team_note_breakdown(gold_list, trainee_list)
 
     correct_count = 0
     matched_events = 0
@@ -661,6 +743,8 @@ def evaluate_match(gold_list, trainee_list, time_tolerance=2000):
         "trainee_attribute_counts_valid": trainee_attribute_counts_valid,
         "attribute_comparison": attribute_comparison,
         "attribute_note_breakdown": attribute_note_breakdown,
+        "attribute_team_breakdown": attribute_team_breakdown,
+        "attribute_team_note_breakdown": attribute_team_note_breakdown,
         "attribute_display_names": ACTION_DISPLAY_NAMES,
         "insights": insights,
         "timestamp_within_tolerance_count": timestamp_within_tolerance_count,

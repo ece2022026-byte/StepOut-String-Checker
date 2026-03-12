@@ -1,7 +1,17 @@
-﻿let charts = {};
+let charts = {};
 let latestAlignmentRows = [];
+let latestMismatchRows = [];
+let hasEvaluationRun = false;
 let keyActionErrorStore = {};
 let attributeNoteBreakdown = {};
+let attributeTeamBreakdown = {};
+let attributeTeamNoteBreakdown = {};
+const HAS_ANIME = typeof window !== "undefined" && typeof window.anime === "function";
+const PREFERS_REDUCED_MOTION =
+    typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const MOTION_ENABLED = HAS_ANIME && !PREFERS_REDUCED_MOTION;
 const ATTRIBUTE_FULL_NAMES = {
     SP: "Short Pass",
     LP: "Long Pass",
@@ -24,6 +34,7 @@ const ATTRIBUTE_FULL_NAMES = {
     GH: "Goalkeeper Handling",
     GT: "Goalkeeper Throw",
     CN: "Corner",
+    OG: "Own Goal",
     OFF: "Offside",
     F: "Foul",
     YC: "Yellow Card",
@@ -52,6 +63,57 @@ const STORAGE_KEYS = {
     gold: "stepout_gold_text",
     trainee: "stepout_trainee_text"
 };
+const SPECIAL_PRESENCE_ACTIONS = new Set(["FK", "OG", "CN", "GK", "F", "YC", "RC", "OFF", "HB", "PK"]);
+const SPECIAL_NOTE_KEY = "__PRESENCE__";
+
+function motionRun(config) {
+    if (!MOTION_ENABLED) return;
+    if (!config || !config.targets) return;
+    window.anime.remove(config.targets);
+    window.anime(config);
+}
+
+function formatAnimatedNumber(value, decimals = 0) {
+    const safe = Number.isFinite(Number(value)) ? Number(value) : 0;
+    if (decimals > 0) {
+        return safe.toLocaleString(undefined, {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: decimals
+        });
+    }
+    return Math.round(safe).toLocaleString();
+}
+
+function animateCountUp(node, endValue, suffix = "", decimals = 0, duration = 920) {
+    if (!node) return;
+    const safeEnd = Number.isFinite(Number(endValue)) ? Number(endValue) : 0;
+
+    if (!MOTION_ENABLED) {
+        node.textContent = `${formatAnimatedNumber(safeEnd, decimals)}${suffix}`;
+        return;
+    }
+
+    const ticker = { value: 0 };
+    motionRun({
+        targets: ticker,
+        value: safeEnd,
+        duration,
+        easing: "easeOutExpo",
+        update: () => {
+            node.textContent = `${formatAnimatedNumber(ticker.value, decimals)}${suffix}`;
+        }
+    });
+}
+
+function animateTapFeedback(target, scaleTo = 0.975) {
+    if (!MOTION_ENABLED || !target) return;
+    motionRun({
+        targets: target,
+        scale: [1, scaleTo, 1],
+        duration: 260,
+        easing: "easeOutQuad"
+    });
+}
 
 function escapeHtml(value) {
     return String(value ?? '')
@@ -60,6 +122,50 @@ function escapeHtml(value) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
+}
+
+function escapeRegExp(value) {
+    return String(value ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function getSearchTerms(query) {
+    return Array.from(new Set(
+        String(query ?? '')
+            .trim()
+            .toLowerCase()
+            .split(/\s+/)
+            .filter(Boolean)
+    ));
+}
+
+function highlightText(value, terms) {
+    const text = String(value ?? '');
+    if (!terms.length || !text) return escapeHtml(text);
+
+    const pattern = new RegExp(terms.map(escapeRegExp).sort((a, b) => b.length - a.length).join('|'), 'gi');
+    let result = '';
+    let lastIndex = 0;
+    let match;
+
+    while ((match = pattern.exec(text)) !== null) {
+        const start = match.index;
+        const end = start + match[0].length;
+        result += escapeHtml(text.slice(lastIndex, start));
+        result += `<mark class="search-highlight">${escapeHtml(match[0])}</mark>`;
+        lastIndex = end;
+    }
+
+    result += escapeHtml(text.slice(lastIndex));
+    return result;
+}
+
+function rowMatchesQuery(parts, terms) {
+    if (!terms.length) return true;
+    const haystack = parts
+        .map((part) => String(part ?? ''))
+        .join(' ')
+        .toLowerCase();
+    return terms.every((term) => haystack.includes(term));
 }
 
 function sparklineSvg(values, stroke) {
@@ -86,12 +192,49 @@ function attributeLabel(code) {
     return full ? `${full} (${code})` : code;
 }
 
+function teamLabel(teamCode) {
+    if (teamCode === "A") return "Team A";
+    if (teamCode === "B") return "Team B";
+    return "Other";
+}
+
 function hideAttributeCountModal() {
     const modal = document.getElementById("attributeCountModal");
     if (!modal) return;
-    modal.classList.remove("show");
-    modal.setAttribute("aria-hidden", "true");
-    document.body.classList.remove("modal-open");
+
+    const finalizeHide = () => {
+        modal.classList.remove("show");
+        modal.setAttribute("aria-hidden", "true");
+        document.body.classList.remove("modal-open");
+        modal.style.opacity = "";
+        const card = modal.querySelector(".attribute-count-modal-card");
+        if (card) {
+            card.style.opacity = "";
+            card.style.transform = "";
+        }
+    };
+
+    if (!MOTION_ENABLED || !modal.classList.contains("show")) {
+        finalizeHide();
+        return;
+    }
+
+    const card = modal.querySelector(".attribute-count-modal-card");
+    motionRun({
+        targets: modal,
+        opacity: [1, 0],
+        duration: 170,
+        easing: "easeInOutQuad"
+    });
+    motionRun({
+        targets: card,
+        opacity: [1, 0],
+        translateY: [0, 12],
+        scale: [1, 0.96],
+        duration: 190,
+        easing: "easeInOutQuad",
+        complete: finalizeHide
+    });
 }
 
 function showAttributeCountModal(attributeCode, goldCount, traineeCount) {
@@ -100,14 +243,25 @@ function showAttributeCountModal(attributeCode, goldCount, traineeCount) {
     const goldNode = document.getElementById("attributeCountGold");
     const traineeNode = document.getElementById("attributeCountTrainee");
     const deltaNode = document.getElementById("attributeCountDelta");
+    const teamsNode = document.getElementById("attributeCountTeams");
     const notesNode = document.getElementById("attributeCountNotes");
-    if (!modal || !title || !goldNode || !traineeNode || !deltaNode || !notesNode) return;
+    if (!modal || !title || !goldNode || !traineeNode || !deltaNode || !teamsNode || !notesNode) return;
 
     const breakdown = (attributeNoteBreakdown && typeof attributeNoteBreakdown === "object")
         ? (attributeNoteBreakdown[attributeCode] || {})
         : {};
+    const teamBreakdown = (attributeTeamBreakdown && typeof attributeTeamBreakdown === "object")
+        ? (attributeTeamBreakdown[attributeCode] || {})
+        : {};
+    const teamNoteBreakdown = (attributeTeamNoteBreakdown && typeof attributeTeamNoteBreakdown === "object")
+        ? (attributeTeamNoteBreakdown[attributeCode] || {})
+        : {};
     const goldNotes = breakdown.gold || {};
     const traineeNotes = breakdown.trainee || {};
+    const goldTeams = teamBreakdown.gold || {};
+    const traineeTeams = teamBreakdown.trainee || {};
+    const goldTeamNotes = teamNoteBreakdown.gold || {};
+    const traineeTeamNotes = teamNoteBreakdown.trainee || {};
     const noteKeys = Array.from(new Set([...Object.keys(goldNotes), ...Object.keys(traineeNotes)]))
         .sort((a, b) => {
             const aNum = /^\d+$/.test(String(a));
@@ -115,6 +269,7 @@ function showAttributeCountModal(attributeCode, goldCount, traineeCount) {
             if (aNum && bNum) return Number(a) - Number(b);
             return String(a).localeCompare(String(b));
         });
+    const isPresenceAction = SPECIAL_PRESENCE_ACTIONS.has(attributeCode);
 
     const sumCounts = (obj) => Object.values(obj).reduce((sum, n) => sum + Number(n || 0), 0);
     const gold = noteKeys.length ? sumCounts(goldNotes) : Number(goldCount || 0);
@@ -137,26 +292,98 @@ function showAttributeCountModal(attributeCode, goldCount, traineeCount) {
         deltaNode.textContent = "Gold and Trainee counts are equal";
     }
 
+    const preferredTeams = ["A", "B"];
+    const optionalTeams = Array.from(new Set([...Object.keys(goldTeams), ...Object.keys(traineeTeams)]))
+        .filter((team) => !preferredTeams.includes(team) && ((Number(goldTeams[team] || 0) > 0) || (Number(traineeTeams[team] || 0) > 0)));
+    const teamKeys = [...preferredTeams, ...optionalTeams];
+    teamsNode.innerHTML = teamKeys.map((team) => {
+        const goldTeamCount = Number(goldTeams[team] || 0);
+        const traineeTeamCount = Number(traineeTeams[team] || 0);
+        const goldShare = gold > 0 ? (goldTeamCount / gold) * 100 : 0;
+        const traineeShare = trainee > 0 ? (traineeTeamCount / trainee) * 100 : 0;
+        const delta = traineeTeamCount - goldTeamCount;
+        const deltaLabel = delta === 0
+            ? "Aligned with gold"
+            : (delta > 0
+                ? `Trainee +${delta.toLocaleString()}`
+                : `Trainee ${delta.toLocaleString()}`);
+
+        return `
+            <article class="attribute-team-card team-${escapeHtml(team.toLowerCase())}">
+                <div class="attribute-team-top">
+                    <div>
+                        <div class="attribute-team-name">${escapeHtml(teamLabel(team))}</div>
+                        <div class="attribute-team-sub">${escapeHtml(deltaLabel)}</div>
+                    </div>
+                    <span class="attribute-team-tag">${(goldTeamCount + traineeTeamCount).toLocaleString()} tagged</span>
+                </div>
+                <div class="attribute-team-stats">
+                    <div class="attribute-team-stat is-gold">
+                        <span>Gold</span>
+                        <strong>${goldTeamCount.toLocaleString()}</strong>
+                        <small>${goldShare.toFixed(1)}%</small>
+                    </div>
+                    <div class="attribute-team-stat is-trainee">
+                        <span>Trainee</span>
+                        <strong>${traineeTeamCount.toLocaleString()}</strong>
+                        <small>${traineeShare.toFixed(1)}%</small>
+                    </div>
+                </div>
+                <div class="attribute-team-bars">
+                    <div class="attribute-team-bar-row">
+                        <span>Gold Share</span>
+                        <div class="attribute-team-bar"><i class="fill is-gold" style="width:${goldShare.toFixed(1)}%"></i></div>
+                    </div>
+                    <div class="attribute-team-bar-row">
+                        <span>Trainee Share</span>
+                        <div class="attribute-team-bar"><i class="fill is-trainee" style="width:${traineeShare.toFixed(1)}%"></i></div>
+                    </div>
+                </div>
+            </article>
+        `;
+    }).join('');
+
     if (!noteKeys.length) {
         notesNode.innerHTML = `<div class="attribute-note-empty">No action-note breakdown available.</div>`;
     } else {
         const rowsHtml = noteKeys.map((note) => {
             const g = Number(goldNotes[note] || 0);
             const t = Number(traineeNotes[note] || 0);
+            const displayKey = (note === SPECIAL_NOTE_KEY) ? attributeCode : `${attributeCode}-${note}`;
+            const goldTeamA = Number(((goldTeamNotes.A || {})[note]) || 0);
+            const goldTeamB = Number(((goldTeamNotes.B || {})[note]) || 0);
+            const goldOther = Number(((goldTeamNotes.OTHER || {})[note]) || 0);
+            const traineeTeamA = Number(((traineeTeamNotes.A || {})[note]) || 0);
+            const traineeTeamB = Number(((traineeTeamNotes.B || {})[note]) || 0);
+            const traineeOther = Number(((traineeTeamNotes.OTHER || {})[note]) || 0);
+            const goldSplitBits = [
+                `<span class="attribute-note-pill">A ${goldTeamA.toLocaleString()}</span>`,
+                `<span class="attribute-note-pill">B ${goldTeamB.toLocaleString()}</span>`,
+                goldOther > 0 ? `<span class="attribute-note-pill is-other">Other ${goldOther.toLocaleString()}</span>` : ''
+            ].join('');
+            const traineeSplitBits = [
+                `<span class="attribute-note-pill">A ${traineeTeamA.toLocaleString()}</span>`,
+                `<span class="attribute-note-pill">B ${traineeTeamB.toLocaleString()}</span>`,
+                traineeOther > 0 ? `<span class="attribute-note-pill is-other">Other ${traineeOther.toLocaleString()}</span>` : ''
+            ].join('');
             return `
-                <div class="attribute-note-row">
-                    <span class="attribute-note-key">${escapeHtml(`${attributeCode}-${note}`)}</span>
+                <div class="attribute-note-matrix-row">
+                    <span class="attribute-note-key">${escapeHtml(displayKey)}</span>
                     <span class="attribute-note-val is-gold">${g.toLocaleString()}</span>
+                    <span class="attribute-note-split">${goldSplitBits}</span>
                     <span class="attribute-note-val is-trainee">${t.toLocaleString()}</span>
+                    <span class="attribute-note-split">${traineeSplitBits}</span>
                 </div>
             `;
         }).join('');
 
         notesNode.innerHTML = `
-            <div class="attribute-note-row attribute-note-row-head">
+            <div class="attribute-note-matrix-row attribute-note-matrix-row-head">
                 <span>Action-Note</span>
-                <span>Gold</span>
-                <span>Trainee</span>
+                <span>Gold Total</span>
+                <span>Gold Team Split</span>
+                <span>Trainee Total</span>
+                <span>Trainee Team Split</span>
             </div>
             ${rowsHtml}
         `;
@@ -165,6 +392,26 @@ function showAttributeCountModal(attributeCode, goldCount, traineeCount) {
     modal.classList.add("show");
     modal.setAttribute("aria-hidden", "false");
     document.body.classList.add("modal-open");
+
+    if (!MOTION_ENABLED) return;
+
+    const card = modal.querySelector(".attribute-count-modal-card");
+    motionRun({
+        targets: modal,
+        opacity: [0, 1],
+        duration: 180,
+        easing: "easeOutQuad"
+    });
+    motionRun({
+        targets: card,
+        opacity: [0, 1],
+        translateY: [16, 0],
+        scale: [0.95, 1],
+        duration: 250,
+        easing: "easeOutCubic"
+    });
+    animateStaggered("#attributeCountTeams .attribute-team-card", 20, 10, 420, 0.99);
+    animateStaggered("#attributeCountNotes .attribute-note-matrix-row", 50, 8, 420, 0.99);
 }
 
 function restoreSavedInputs() {
@@ -201,8 +448,21 @@ function attachInputPersistence() {
     traineeBox.addEventListener("input", persist);
 }
 
+function announceAnimationStatus() {
+    if (MOTION_ENABLED) {
+        console.info("Anime.js motion system is enabled.");
+        return;
+    }
+    if (HAS_ANIME && PREFERS_REDUCED_MOTION) {
+        console.info("Anime.js loaded, but motion is reduced by system accessibility preference.");
+        return;
+    }
+    console.warn("Anime.js not loaded. Check internet/CDN access if no motion is visible.");
+}
+
 restoreSavedInputs();
 attachInputPersistence();
+announceAnimationStatus();
 
 const attributeCountModal = document.getElementById("attributeCountModal");
 const attributeCountModalClose = document.getElementById("attributeCountModalClose");
@@ -246,46 +506,324 @@ function switchSidebarView(viewName) {
         checkerView.style.display = "none";
         auditView.style.display = "none";
     }
+
+    animateSidebarView(viewName);
 }
 
-function applyAuditFilter() {
+function animateStaggered(selector, baseDelay = 0, distance = 14, duration = 640, scaleFrom = 0.97) {
+    if (!MOTION_ENABLED) return;
+    const elements = document.querySelectorAll(selector);
+    if (!elements.length) return;
+
+    motionRun({
+        targets: elements,
+        opacity: [0, 1],
+        translateY: [distance, 0],
+        scale: [scaleFrom, 1],
+        easing: "easeOutCubic",
+        duration,
+        delay: (_, i) => baseDelay + (i * 70)
+    });
+}
+
+function animateDashboardBoot() {
+    animateStaggered(".left-sidebar .brand-area, .left-sidebar .sidebar-section-title, .left-sidebar .sidebar-link[data-view], .left-sidebar .sidebar-card", 0, 16, 620, 0.98);
+    animateStaggered(".topbar, .form-panel", 90, 18, 600, 0.97);
+    animateStaggered("#homeView .chart-card, #summary-section .row > *, #insights-section .insight-card", 180, 14, 560, 0.98);
+}
+
+function animateSidebarView(viewName) {
+    if (viewName === "string-checker") {
+        animateStaggered("#stringCheckerView .search-tools, #mismatch-section .comparison-header, #mismatch-section .comparison-card, #mismatch-section .comparison-empty", 0, 20, 560, 0.97);
+        return;
+    }
+    if (viewName === "string-audit") {
+        animateStaggered("#stringAuditView .search-tools, #audit-section .comparison-header, #audit-section .audit-card, #audit-section .comparison-empty", 0, 18, 560, 0.97);
+        return;
+    }
+    animateStaggered("#summary-section .row > *, #insights-section .insight-card, #insights-section .insight-chip, #insights-section .key-action-card, #homeView .chart-card", 0, 16, 560, 0.98);
+}
+
+function animateEvaluationRender() {
+    animateStaggered("#summary-section .row > *", 0, 24, 620, 0.97);
+    animateStaggered("#insights-section .insight-card", 90, 22, 640, 0.97);
+    animateStaggered("#insights-section .insight-chip, #insights-section .key-action-card", 150, 18, 620, 0.98);
+    animateStaggered("#homeView .chart-card", 200, 14, 520, 0.99);
+    animateStaggered("#stringCheckerView .search-tools, #mismatch-section .comparison-header, #mismatch-section .comparison-card, #mismatch-section .comparison-empty", 240, 20, 620, 0.97);
+    animateStaggered("#stringAuditView .search-tools, #audit-section .comparison-header, #audit-section .audit-card, #audit-section .comparison-empty", 300, 20, 620, 0.97);
+}
+
+function animateChartPanels() {
+    animateStaggered("#homeView .chart-card h5, #pieChart, #barChart, #timelineChart, #attributeCompareChart, #pie-breakdown", 0, 10, 500, 1);
+    animateStaggered("#attributeBarsGrid .attribute-mini-card", 80, 10, 500, 0.98);
+}
+
+function animateSummaryMetrics() {
+    const accuracyNode = document.querySelector("#summary-section .summary-accuracy");
+    if (accuracyNode) {
+        const accuracyValue = Number(accuracyNode.getAttribute("data-value") || 0);
+        const hasFraction = String(accuracyNode.getAttribute("data-value") || "").includes(".");
+        animateCountUp(accuracyNode, accuracyValue, "%", hasFraction ? 2 : 0, 980);
+    }
+
+    document.querySelectorAll("#summary-section .summary-number").forEach((node, idx) => {
+        const value = Number(node.getAttribute("data-value") || 0);
+        animateCountUp(node, value, "", 0, 780 + (idx * 90));
+    });
+}
+
+function renderIssueChips(entries, terms, chipClass, fieldClass, textClass) {
+    if (!entries.length) return '';
+
+    return `
+        <div class="${chipClass === 'warning-chip' ? 'comparison-warnings' : 'comparison-errors'}">
+            ${entries.map(([field, values]) => {
+                const expected = highlightText(values?.expected, terms);
+                const predicted = highlightText(values?.predicted, terms);
+                return `
+                    <div class="${chipClass}">
+                        <span class="${fieldClass}">${highlightText(String(field ?? '').toUpperCase(), terms)}</span>
+                        <span class="${textClass}">Expected: <b>${expected}</b></span>
+                        <span class="${textClass}">Got: <b>${predicted}</b></span>
+                    </div>
+                `;
+            }).join('')}
+        </div>
+    `;
+}
+
+function renderMismatchSection() {
+    const container = document.getElementById("mismatch-section");
+    const input = document.getElementById("checkerSearchInput");
+    const meta = document.getElementById("checkerSearchMeta");
+    if (!container || !input || !meta) return;
+
+    const query = input.value.trim();
+    const terms = getSearchTerms(query);
+    const rows = Array.isArray(latestMismatchRows) ? latestMismatchRows : [];
+    if (!hasEvaluationRun) {
+        meta.textContent = "Run an evaluation to search mismatch rows.";
+        container.innerHTML = `
+            <div class="comparison-empty">
+                <div class="comparison-empty-title">No mismatch data yet</div>
+                <div class="comparison-empty-sub">Run an evaluation to generate the detailed string checker view.</div>
+            </div>
+        `;
+        return;
+    }
+    const indexedRows = rows.map((item, index) => ({ item, index }));
+    const matchedCount = indexedRows.filter(({ item }) => rowMatchesQuery([
+        item.gold || '',
+        item.trainee || '',
+        JSON.stringify(item.errors || {}),
+        JSON.stringify(item.warnings || {})
+    ], terms)).length;
+
+    meta.textContent = query
+        ? `${matchedCount} of ${rows.length} mismatch row(s) matched "${query}". Showing all rows.`
+        : `Showing all ${rows.length} mismatch row(s).`;
+
+    let logHtml = `
+        <div class="comparison-header mb-3">
+            <h3 class="comparison-title m-0">Detailed String Comparison</h3>
+            <span class="comparison-total">${query ? `${matchedCount} matched / ${rows.length}` : rows.length} mismatches</span>
+        </div>
+    `;
+
+    if (!rows.length) {
+        logHtml += `
+            <div class="comparison-empty">
+                <div class="comparison-empty-title">Perfect alignment</div>
+                <div class="comparison-empty-sub">No mismatches found in this run.</div>
+            </div>
+        `;
+    } else {
+        indexedRows.forEach(({ item, index }) => {
+            const errors = Object.entries(item.errors || {});
+            const warnings = Object.entries(item.warnings || {});
+            const isMatch = rowMatchesQuery([
+                item.gold || '',
+                item.trainee || '',
+                JSON.stringify(item.errors || {}),
+                JSON.stringify(item.warnings || {})
+            ], terms);
+            const searchClass = query ? (isMatch ? " search-hit" : " search-muted") : "";
+
+            logHtml += `
+                <article class="comparison-card${searchClass} mb-3">
+                    <div class="comparison-card-head">
+                        <span class="comparison-id">Mismatch #${index + 1}</span>
+                        <span class="comparison-meta">${errors.length} field${errors.length === 1 ? '' : 's'} differ</span>
+                    </div>
+                    <div class="comparison-grid">
+                        <div class="comparison-side comparison-side-gold">
+                            <div class="comparison-label">Gold Standard</div>
+                            <pre class="comparison-string">${highlightText(item.gold, terms)}</pre>
+                        </div>
+                        <div class="comparison-side comparison-side-trainee">
+                            <div class="comparison-label">Trainee Output</div>
+                            <pre class="comparison-string">${highlightText(item.trainee, terms)}</pre>
+                        </div>
+                    </div>
+                    ${renderIssueChips(errors, terms, 'error-chip', 'error-field', 'error-text')}
+                    ${renderIssueChips(warnings, terms, 'warning-chip', 'warning-field', 'warning-text')}
+                </article>
+            `;
+        });
+    }
+
+    container.innerHTML = logHtml;
+}
+
+function renderAuditSection() {
     const container = document.getElementById("audit-section");
     const input = document.getElementById("auditSearchInput");
     const meta = document.getElementById("auditSearchMeta");
     if (!container || !input || !meta) return;
 
-    const q = input.value.trim().toLowerCase();
+    const query = input.value.trim();
+    const terms = getSearchTerms(query);
     const rows = Array.isArray(latestAlignmentRows) ? latestAlignmentRows : [];
+    if (!hasEvaluationRun) {
+        meta.textContent = "Run an evaluation to search audit rows.";
+        container.innerHTML = `
+            <div class="comparison-empty">
+                <div class="comparison-empty-title">No audit data yet</div>
+                <div class="comparison-empty-sub">Run an evaluation to generate the string audit view.</div>
+            </div>
+        `;
+        return;
+    }
+    const indexedRows = rows.map((row, index) => ({ row, index }));
+    const matchedCount = indexedRows.filter(({ row }) => rowMatchesQuery([
+        row.status || '',
+        row.gold || '',
+        row.trainee || '',
+        JSON.stringify(row.errors || {}),
+        JSON.stringify(row.warnings || {})
+    ], terms)).length;
 
-    let visibleCount = 0;
-    const cards = container.querySelectorAll(".audit-card");
-    cards.forEach((card, idx) => {
-        const row = rows[idx] || {};
-        const haystack = [
-            row.status || "",
-            row.gold || "",
-            row.trainee || "",
-            JSON.stringify(row.errors || {}),
-            JSON.stringify(row.warnings || {})
-        ].join(" ").toLowerCase();
-
-        const show = !q || haystack.includes(q);
-        card.style.display = show ? "" : "none";
-        if (show) visibleCount += 1;
-    });
-
-    meta.textContent = q
-        ? `${visibleCount} of ${rows.length} row(s) matched "${input.value.trim()}".`
+    meta.textContent = query
+        ? `${matchedCount} of ${rows.length} row(s) matched "${query}". Showing all rows.`
         : `Showing all ${rows.length} row(s).`;
+
+    let auditHtml = `
+        <div class="comparison-header mb-3">
+            <h3 class="comparison-title m-0">String Audit</h3>
+            <span class="comparison-total">${query ? `${matchedCount} matched / ${rows.length}` : rows.length} aligned rows</span>
+        </div>
+    `;
+
+    if (!rows.length) {
+        auditHtml += `
+            <div class="comparison-empty">
+                <div class="comparison-empty-title">No audit data</div>
+                <div class="comparison-empty-sub">Run an evaluation to generate string audit rows.</div>
+            </div>
+        `;
+    } else {
+        indexedRows.forEach(({ row, index }) => {
+            const status = row.status || 'matched';
+            const errors = Object.entries(row.errors || {});
+            const warnings = Object.entries(row.warnings || {});
+            const isMatch = rowMatchesQuery([
+                row.status || '',
+                row.gold || '',
+                row.trainee || '',
+                JSON.stringify(row.errors || {}),
+                JSON.stringify(row.warnings || {})
+            ], terms);
+            const searchClass = query ? (isMatch ? " search-hit" : " search-muted") : "";
+
+            auditHtml += `
+                <article class="audit-card audit-${status}${searchClass} mb-3">
+                    <div class="audit-head">
+                        <span class="audit-index">Row #${index + 1}</span>
+                        <span class="audit-status">${highlightText(status.toUpperCase(), terms)}</span>
+                    </div>
+                    <div class="comparison-grid">
+                        <div class="comparison-side comparison-side-gold">
+                            <div class="comparison-label">Gold</div>
+                            <pre class="comparison-string">${highlightText(row.gold ?? '(none)', terms)}</pre>
+                        </div>
+                        <div class="comparison-side comparison-side-trainee">
+                            <div class="comparison-label">Trainee</div>
+                            <pre class="comparison-string">${highlightText(row.trainee ?? '(none)', terms)}</pre>
+                        </div>
+                    </div>
+                    ${renderIssueChips(errors, terms, 'error-chip', 'error-field', 'error-text')}
+                    ${renderIssueChips(warnings, terms, 'warning-chip', 'warning-field', 'warning-text')}
+                </article>
+            `;
+        });
+    }
+
+    container.innerHTML = auditHtml;
+}
+
+function applyAuditFilter() {
+    renderAuditSection();
+}
+
+function applyCheckerFilter() {
+    renderMismatchSection();
 }
 
 function setInsightsLoading(isLoading) {
     const loader = document.getElementById("insightLoader");
+    const loaderCard = loader ? loader.querySelector(".insight-loader-card") : null;
     const submitBtn = document.querySelector("#uploadForm button[type='submit']");
     if (!loader) return;
 
-    loader.classList.toggle("show", !!isLoading);
-    loader.setAttribute("aria-hidden", isLoading ? "false" : "true");
+    if (isLoading) {
+        loader.classList.add("show");
+        loader.setAttribute("aria-hidden", "false");
+        if (MOTION_ENABLED) {
+            motionRun({
+                targets: loader,
+                opacity: [0, 1],
+                duration: 160,
+                easing: "linear"
+            });
+            motionRun({
+                targets: loaderCard,
+                opacity: [0, 1],
+                scale: [0.94, 1],
+                translateY: [12, 0],
+                duration: 220,
+                easing: "easeOutCubic"
+            });
+        }
+    } else if (MOTION_ENABLED && loader.classList.contains("show")) {
+        motionRun({
+            targets: loader,
+            opacity: [1, 0],
+            duration: 140,
+            easing: "linear",
+            complete: () => {
+                loader.classList.remove("show");
+                loader.setAttribute("aria-hidden", "true");
+                loader.style.opacity = "";
+            }
+        });
+        motionRun({
+            targets: loaderCard,
+            opacity: [1, 0],
+            scale: [1, 0.97],
+            translateY: [0, 6],
+            duration: 160,
+            easing: "easeInOutQuad",
+            complete: () => {
+                if (loaderCard) {
+                    loaderCard.style.opacity = "";
+                    loaderCard.style.transform = "";
+                }
+            }
+        });
+    } else {
+        loader.classList.remove("show");
+        loader.setAttribute("aria-hidden", "true");
+    }
 
     if (submitBtn) {
         submitBtn.disabled = !!isLoading;
@@ -309,6 +847,7 @@ function renderKeyActionDrilldown(key) {
                 <div class="key-drilldown-title">Action ${escapeHtml(key)} has no mismatches in this run.</div>
             </div>
         `;
+        animateStaggered("#keyActionDrilldown .key-drilldown-card", 0, 10, 420, 0.99);
         return;
     }
 
@@ -355,18 +894,44 @@ function renderKeyActionDrilldown(key) {
             ${detailsHtml}
         </div>
     `;
+    animateStaggered("#keyActionDrilldown .key-drilldown-card, #keyActionDrilldown .comparison-card", 0, 10);
 }
 
 document.querySelectorAll(".sidebar-link[data-view]").forEach((link) => {
     link.addEventListener("click", (e) => {
         e.preventDefault();
+        animateTapFeedback(link, 0.965);
         switchSidebarView(link.dataset.view);
     });
 });
 
+document.addEventListener("click", (event) => {
+    const target = event.target.closest(".btn, .key-action-link, .attribute-mini-card, .insight-chip");
+    if (!target) return;
+    animateTapFeedback(target);
+});
+
+const checkerSearchInput = document.getElementById("checkerSearchInput");
+if (checkerSearchInput) {
+    checkerSearchInput.addEventListener("input", applyCheckerFilter);
+}
+
 const auditSearchInput = document.getElementById("auditSearchInput");
 if (auditSearchInput) {
     auditSearchInput.addEventListener("input", applyAuditFilter);
+}
+
+renderMismatchSection();
+renderAuditSection();
+
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+        animateDashboardBoot();
+    }, { once: true });
+} else {
+    setTimeout(() => {
+        animateDashboardBoot();
+    }, 30);
 }
 
 document.getElementById("uploadForm").addEventListener("submit", async function(e) {
@@ -390,6 +955,12 @@ document.getElementById("uploadForm").addEventListener("submit", async function(
         attributeNoteBreakdown = (data.attribute_note_breakdown && typeof data.attribute_note_breakdown === "object")
             ? data.attribute_note_breakdown
             : {};
+        attributeTeamBreakdown = (data.attribute_team_breakdown && typeof data.attribute_team_breakdown === "object")
+            ? data.attribute_team_breakdown
+            : {};
+        attributeTeamNoteBreakdown = (data.attribute_team_note_breakdown && typeof data.attribute_team_note_breakdown === "object")
+            ? data.attribute_team_note_breakdown
+            : {};
 
         document.getElementById("downloadPdf").style.display = "block";
 
@@ -397,18 +968,19 @@ document.getElementById("uploadForm").addEventListener("submit", async function(
         <div class="row g-3 mb-4 text-center">
             <div class="col-md-3">
                 <div class="p-4 bg-primary text-white rounded-4 shadow-sm">
-                    <h2 class="display-6 fw-bold m-0">${data.overall_accuracy}%</h2>
+                    <h2 class="display-6 fw-bold m-0 summary-accuracy" data-value="${Number(data.overall_accuracy || 0)}">${data.overall_accuracy}%</h2>
                     <small class="text-uppercase fw-bold">Overall Accuracy</small>
                 </div>
             </div>
             <div class="col-md-9 d-flex gap-2">
-                <div class="flex-fill bg-white p-3 rounded-4 border"><b>Correct</b><br>${data.correct}</div>
-                <div class="flex-fill bg-white p-3 rounded-4 border text-warning"><b>Missed</b><br>${data.missed_count}</div>
-                <div class="flex-fill bg-white p-3 rounded-4 border text-danger"><b>Mismatch</b><br>${data.mismatch_count}</div>
-                <div class="flex-fill bg-white p-3 rounded-4 border text-info"><b>Extra</b><br>${data.extra_count}</div>
+                <div class="flex-fill bg-white p-3 rounded-4 border"><b>Correct</b><br><span class="summary-number" data-value="${Number(data.correct || 0)}">${data.correct}</span></div>
+                <div class="flex-fill bg-white p-3 rounded-4 border text-warning"><b>Missed</b><br><span class="summary-number" data-value="${Number(data.missed_count || 0)}">${data.missed_count}</span></div>
+                <div class="flex-fill bg-white p-3 rounded-4 border text-danger"><b>Mismatch</b><br><span class="summary-number" data-value="${Number(data.mismatch_count || 0)}">${data.mismatch_count}</span></div>
+                <div class="flex-fill bg-white p-3 rounded-4 border text-info"><b>Extra</b><br><span class="summary-number" data-value="${Number(data.extra_count || 0)}">${data.extra_count}</span></div>
             </div>
         </div>
         `;
+        animateSummaryMetrics();
 
         const insights = data.insights || {};
         const mostAttr = insights.most_error_attribute || {};
@@ -532,121 +1104,14 @@ document.getElementById("uploadForm").addEventListener("submit", async function(
         });
 
         renderCharts(data);
+        animateChartPanels();
 
-        let logHtml = `
-        <div class="comparison-header mt-5 mb-3">
-            <h3 class="comparison-title m-0">Detailed String Comparison</h3>
-            <span class="comparison-total">${data.mismatch_count || 0} mismatches</span>
-        </div>
-    `;
-        if (!data.mismatched_details || data.mismatched_details.length === 0) {
-        logHtml += `
-            <div class="comparison-empty">
-                <div class="comparison-empty-title">Perfect alignment</div>
-                <div class="comparison-empty-sub">No mismatches found in this run.</div>
-            </div>
-        `;
-        } else {
-            data.mismatched_details.forEach((item, idx) => {
-            const errors = Object.entries(item.errors || {});
-            const goldText = escapeHtml(item.gold);
-            const traineeText = escapeHtml(item.trainee);
-            logHtml += `
-                <article class="comparison-card mb-3">
-                    <div class="comparison-card-head">
-                        <span class="comparison-id">Mismatch #${idx + 1}</span>
-                        <span class="comparison-meta">${errors.length} field${errors.length === 1 ? '' : 's'} differ</span>
-                    </div>
-                    <div class="comparison-grid">
-                        <div class="comparison-side comparison-side-gold">
-                            <div class="comparison-label">Gold Standard</div>
-                            <pre class="comparison-string">${goldText}</pre>
-                        </div>
-                        <div class="comparison-side comparison-side-trainee">
-                            <div class="comparison-label">Trainee Output</div>
-                            <pre class="comparison-string">${traineeText}</pre>
-                        </div>
-                    </div>
-                    <div class="comparison-errors">
-                        ${errors.map(([field, values]) => {
-                            const expected = escapeHtml(values?.expected);
-                            const predicted = escapeHtml(values?.predicted);
-                            return `
-                                <div class="error-chip">
-                                    <span class="error-field">${escapeHtml(field).toUpperCase()}</span>
-                                    <span class="error-text">Expected: <b>${expected}</b></span>
-                                    <span class="error-text">Got: <b>${predicted}</b></span>
-                                </div>
-                            `;
-                        }).join('')}
-                    </div>
-                </article>`;
-            });
-        }
-
-        document.getElementById("mismatch-section").innerHTML = logHtml;
-
-        const rows = Array.isArray(data.alignment_rows) ? data.alignment_rows : [];
-        latestAlignmentRows = rows;
-        let auditHtml = `
-        <div class="comparison-header mt-5 mb-3">
-            <h3 class="comparison-title m-0">String Audit</h3>
-            <span class="comparison-total">${rows.length} aligned rows</span>
-        </div>
-    `;
-
-        if (!rows.length) {
-        auditHtml += `
-            <div class="comparison-empty">
-                <div class="comparison-empty-title">No audit data</div>
-                <div class="comparison-empty-sub">Run an evaluation to generate string audit rows.</div>
-            </div>
-        `;
-        } else {
-            rows.forEach((row, idx) => {
-            const status = row.status || 'matched';
-            const goldText = escapeHtml(row.gold ?? '(none)');
-            const traineeText = escapeHtml(row.trainee ?? '(none)');
-            const errors = Object.entries(row.errors || {});
-
-            auditHtml += `
-                <article class="audit-card audit-${status} mb-3">
-                    <div class="audit-head">
-                        <span class="audit-index">Row #${idx + 1}</span>
-                        <span class="audit-status">${status.toUpperCase()}</span>
-                    </div>
-                    <div class="comparison-grid">
-                        <div class="comparison-side comparison-side-gold">
-                            <div class="comparison-label">Gold</div>
-                            <pre class="comparison-string">${goldText}</pre>
-                        </div>
-                        <div class="comparison-side comparison-side-trainee">
-                            <div class="comparison-label">Trainee</div>
-                            <pre class="comparison-string">${traineeText}</pre>
-                        </div>
-                    </div>
-                    ${errors.length ? `
-                        <div class="comparison-errors">
-                            ${errors.map(([field, values]) => {
-                                const expected = escapeHtml(values?.expected);
-                                const predicted = escapeHtml(values?.predicted);
-                                return `
-                                    <div class="error-chip">
-                                        <span class="error-field">${escapeHtml(field).toUpperCase()}</span>
-                                        <span class="error-text">Expected: <b>${expected}</b></span>
-                                        <span class="error-text">Got: <b>${predicted}</b></span>
-                                    </div>
-                                `;
-                            }).join('')}
-                        </div>
-                    ` : ''}
-                </article>
-            `;
-            });
-        }
-
-        document.getElementById("audit-section").innerHTML = auditHtml;
-        applyAuditFilter();
+        hasEvaluationRun = true;
+        latestMismatchRows = Array.isArray(data.mismatched_details) ? data.mismatched_details : [];
+        latestAlignmentRows = Array.isArray(data.alignment_rows) ? data.alignment_rows : [];
+        renderMismatchSection();
+        renderAuditSection();
+        animateEvaluationRender();
     } catch (err) {
         alert("Unable to generate insights. Please try again.");
     } finally {
@@ -654,162 +1119,210 @@ document.getElementById("uploadForm").addEventListener("submit", async function(
     }
 });
 
-/* ---------- Charts ---------- */
+/* ---------- Charts (ECharts) ---------- */
 function renderCharts(data) {
-    Object.values(charts).forEach(c => c.destroy());
+    Object.values(charts).forEach((chart) => {
+        try {
+            chart.dispose();
+        } catch (error) {
+            // Ignore stale chart instances.
+        }
+    });
+    charts = {};
 
-    Chart.register(ChartDataLabels);
-
-    /* PIE CHART */
-    charts.pie = new Chart(document.getElementById('pieChart'), {
-        type: 'doughnut',
-        data: {
-            labels: ['Correct', 'Missed', 'Extra', 'Mismatch'],
-            datasets: [{
-                data: [
-                    data.correct,
-                    data.missed_count,
-                    data.extra_count,
-                    data.mismatch_count
-                ],
-                backgroundColor: [
-                    '#22c55e',
-                    '#f59e0b',
-                    '#38bdf8',
-                    '#f43f5e'
-                ],
-                borderWidth: 0
-            }]
+    const EC = {
+        mutedColor: '#7a96bb',
+        gridLine: 'rgba(120,160,210,0.12)',
+        tooltip: {
+            backgroundColor: '#0f1c2e',
+            borderColor: '#2a4060',
+            textStyle: { color: '#dceeff', fontSize: 13 }
         },
-        options: {
-            maintainAspectRatio: false,
-            cutout: '55%',
-            layout: { padding: 10 },
-            plugins: {
-                legend: {
-                    display: true,
-                    position: 'bottom',
-                    labels: {
-                        color: '#cbd5e1'
-                    }
-                },
-                datalabels: {
+        legend: { textStyle: { color: '#a8c0dc', fontSize: 12 } }
+    };
+
+    const pieEl = document.getElementById('pieChart');
+    if (pieEl) {
+        const pieChart = echarts.init(pieEl, null, { renderer: 'canvas' });
+        charts.pie = pieChart;
+        const pieValues = [
+            { value: data.correct, name: 'Correct', itemStyle: { color: '#22d47a' } },
+            { value: data.missed_count, name: 'Missed', itemStyle: { color: '#f59e0b' } },
+            { value: data.extra_count, name: 'Extra', itemStyle: { color: '#38bdf8' } },
+            { value: data.mismatch_count, name: 'Mismatch', itemStyle: { color: '#f43f5e' } }
+        ];
+        const pieTotal = pieValues.reduce((sum, datum) => sum + datum.value, 0);
+
+        pieChart.setOption({
+            backgroundColor: 'transparent',
+            tooltip: {
+                trigger: 'item',
+                ...EC.tooltip,
+                formatter: (point) => `<b>${point.name}</b><br/>${point.value} &nbsp;(${pieTotal ? ((point.value / pieTotal) * 100).toFixed(1) : 0}%)`
+            },
+            legend: {
+                bottom: 6,
+                left: 'center',
+                ...EC.legend,
+                icon: 'circle',
+                itemWidth: 10,
+                itemHeight: 10,
+                itemGap: 18
+            },
+            series: [{
+                type: 'pie',
+                radius: ['42%', '70%'],
+                center: ['50%', '46%'],
+                data: pieValues,
+                label: {
+                    show: true,
+                    position: 'inside',
+                    formatter: (point) => pieTotal && (point.value / pieTotal) * 100 >= 4 ? `${((point.value / pieTotal) * 100).toFixed(1)}%` : '',
                     color: '#fff',
-                    anchor: 'center',
-                    align: 'center',
-                    formatter: (value, ctx) => {
-                        const total = ctx.dataset.data.reduce((sum, n) => sum + n, 0);
-                        if (!total || value === 0) return '';
-                        const percent = (value / total) * 100;
-                        return percent >= 4 ? `${percent.toFixed(1)}%` : '';
-                    },
-                    font: {
-                        size: 12,
-                        weight: 'bold'
-                    }
-                }
-            }
-        }
-    });
-
-    const pieValues = [data.correct, data.missed_count, data.extra_count, data.mismatch_count];
-    const pieLabels = ['Correct', 'Missed', 'Extra', 'Mismatch'];
-    const pieTotal = pieValues.reduce((sum, n) => sum + n, 0);
-    const breakdownHtml = pieLabels.map((label, i) => {
-        const pct = pieTotal ? ((pieValues[i] / pieTotal) * 100).toFixed(1) : '0.0';
-        return `<span class="mx-2"><b>${label}:</b> ${pct}%</span>`;
-    }).join('');
-    document.getElementById('pie-breakdown').innerHTML = breakdownHtml;
-
-    /* BAR CHART */
-    charts.bar = new Chart(document.getElementById('barChart'), {
-        type: 'bar',
-        data: {
-            labels: Object.keys(data.field_errors || {}),
-            datasets: [{
-                label: 'Errors',
-                data: Object.values(data.field_errors || {}),
-                backgroundColor: '#fb7185',
-                borderRadius: 8
-            }]
-        },
-        options: {
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    labels: {
-                        color: '#cbd5e1'
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    ticks: { color: '#94a3b8' },
-                    grid: { color: 'rgba(148, 163, 184, 0.15)' }
+                    fontWeight: 'bold',
+                    fontSize: 12
                 },
-                y: {
-                    beginAtZero: true,
-                    ticks: { color: '#94a3b8' },
-                    grid: { color: 'rgba(148, 163, 184, 0.18)' }
-                }
-            }
-        }
-    });
+                emphasis: {
+                    itemStyle: { shadowBlur: 18, shadowColor: 'rgba(0,0,0,0.5)' },
+                    scale: true,
+                    scaleSize: 6
+                },
+                animationType: 'scale',
+                animationEasing: 'elasticOut',
+                animationDuration: 900
+            }]
+        });
 
-    /* TIMELINE CHART */
-    const timeline = data.timeline_chart || {};
-    let labels = timeline.labels;
-    let values = timeline.values;
-
-    if (!Array.isArray(labels) || !Array.isArray(values) || labels.length !== values.length) {
-        labels = ['0-5', '5-10', '10-15', '15-20', '20-25', '25-30'];
-        values = [0, 0, 0, 0, 0, 0];
+        const breakdownHtml = pieValues.map((point) => {
+            const pct = pieTotal ? ((point.value / pieTotal) * 100).toFixed(1) : '0.0';
+            return `<span class="mx-2"><b>${point.name}:</b> ${pct}%</span>`;
+        }).join('');
+        document.getElementById('pie-breakdown').innerHTML = breakdownHtml;
     }
-    charts.timeline = new Chart(document.getElementById('timelineChart'), {
-        type: 'bar',
-        data: {
-            labels: labels,
-            datasets: [{
-                label: 'Error Frequency',
-                data: values,
-                backgroundColor: '#0ea5e9',
-                borderColor: '#38bdf8',
-                borderWidth: 2
-            }]
-        },
-        options: {
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    labels: {
-                        color: '#cbd5e1'
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    ticks: { color: '#94a3b8' },
-                    grid: { color: 'rgba(148, 163, 184, 0.12)' }
-                },
-                y: {
-                    beginAtZero: true,
-                    ticks: { color: '#94a3b8' },
-                    grid: { color: 'rgba(148, 163, 184, 0.18)' }
-                }
-            }
-        }
-    });
 
-    /* ATTRIBUTE COMPARISON CHART */
+    const barEl = document.getElementById('barChart');
+    if (barEl) {
+        const barChart = echarts.init(barEl, null, { renderer: 'canvas' });
+        charts.bar = barChart;
+        const fieldKeys = Object.keys(data.field_errors || {});
+        const fieldVals = Object.values(data.field_errors || {});
+
+        barChart.setOption({
+            backgroundColor: 'transparent',
+            tooltip: {
+                trigger: 'axis',
+                axisPointer: { type: 'shadow' },
+                ...EC.tooltip
+            },
+            grid: { left: 16, right: 24, top: 24, bottom: 60, containLabel: true },
+            xAxis: {
+                type: 'category',
+                data: fieldKeys,
+                axisLabel: { color: EC.mutedColor, rotate: 40, fontSize: 11 },
+                axisLine: { lineStyle: { color: '#2a4060' } },
+                splitLine: { show: false }
+            },
+            yAxis: {
+                type: 'value',
+                axisLabel: { color: EC.mutedColor, fontSize: 11 },
+                splitLine: { lineStyle: { color: EC.gridLine } }
+            },
+            series: [{
+                type: 'bar',
+                data: fieldVals,
+                barMaxWidth: 44,
+                itemStyle: {
+                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: '#ff6f8a' },
+                        { offset: 1, color: '#c0374f' }
+                    ]),
+                    borderRadius: [6, 6, 0, 0]
+                },
+                emphasis: { itemStyle: { color: '#ff9aad' } },
+                label: {
+                    show: true,
+                    position: 'top',
+                    color: '#ffb3c2',
+                    fontSize: 11,
+                    fontWeight: 'bold'
+                },
+                animationDelay: (index) => index * 60
+            }],
+            animationEasing: 'elasticOut',
+            animationDuration: 900
+        });
+    }
+
+    const timelineEl = document.getElementById('timelineChart');
+    if (timelineEl) {
+        const timelineChart = echarts.init(timelineEl, null, { renderer: 'canvas' });
+        charts.timeline = timelineChart;
+        const timeline = data.timeline_chart || {};
+        const timelineLabels = Array.isArray(timeline.labels) ? timeline.labels : ['0-5', '5-10', '10-15', '15-20', '20-25', '25-30'];
+        const timelineValues = Array.isArray(timeline.values) && timeline.values.length === timelineLabels.length
+            ? timeline.values
+            : timelineLabels.map(() => 0);
+
+        timelineChart.setOption({
+            backgroundColor: 'transparent',
+            tooltip: {
+                trigger: 'axis',
+                axisPointer: { type: 'shadow' },
+                ...EC.tooltip,
+                formatter: (points) => `<b>${points[0].name} min</b><br/>Errors: <b>${points[0].value}</b>`
+            },
+            grid: { left: 16, right: 24, top: 24, bottom: 48, containLabel: true },
+            xAxis: {
+                type: 'category',
+                data: timelineLabels,
+                name: 'Minutes',
+                nameLocation: 'middle',
+                nameGap: 32,
+                nameTextStyle: { color: EC.mutedColor, fontSize: 11 },
+                axisLabel: { color: EC.mutedColor, fontSize: 11 },
+                axisLine: { lineStyle: { color: '#2a4060' } },
+                splitLine: { show: false }
+            },
+            yAxis: {
+                type: 'value',
+                axisLabel: { color: EC.mutedColor, fontSize: 11 },
+                splitLine: { lineStyle: { color: EC.gridLine } }
+            },
+            visualMap: {
+                show: false,
+                min: 0,
+                max: Math.max(...timelineValues, 1),
+                inRange: { color: ['#1e4d7b', '#0ea5e9', '#7dd3fc'] }
+            },
+            series: [{
+                type: 'bar',
+                data: timelineValues,
+                barMaxWidth: 36,
+                itemStyle: { borderRadius: [5, 5, 0, 0] },
+                emphasis: { itemStyle: { shadowBlur: 12, shadowColor: 'rgba(14,165,233,0.4)' } },
+                label: {
+                    show: true,
+                    position: 'top',
+                    color: '#7dd3fc',
+                    fontSize: 10,
+                    fontWeight: 'bold',
+                    formatter: (point) => point.value > 0 ? point.value : ''
+                },
+                animationDelay: (index) => index * 50
+            }],
+            animationEasing: 'cubicOut',
+            animationDuration: 800
+        });
+    }
+
     const attrComp = data.attribute_comparison || {};
     let attrLabels = Array.isArray(attrComp.labels) ? [...attrComp.labels] : [];
     let goldValues = Array.isArray(attrComp.gold_values) ? [...attrComp.gold_values] : [];
     let traineeValues = Array.isArray(attrComp.trainee_values) ? [...attrComp.trainee_values] : [];
 
-    // Ensure key special attributes are always visible.
     const mustShowAttrs = ['CN', 'F', 'FK', 'GK'];
-    const goldMap = new Map(attrLabels.map((l, i) => [l, goldValues[i] ?? 0]));
-    const traineeMap = new Map(attrLabels.map((l, i) => [l, traineeValues[i] ?? 0]));
+    const goldMap = new Map(attrLabels.map((label, index) => [label, goldValues[index] ?? 0]));
+    const traineeMap = new Map(attrLabels.map((label, index) => [label, traineeValues[index] ?? 0]));
     mustShowAttrs.forEach((attr) => {
         if (!goldMap.has(attr)) {
             attrLabels.push(attr);
@@ -817,56 +1330,72 @@ function renderCharts(data) {
             traineeMap.set(attr, 0);
         }
     });
-    goldValues = attrLabels.map((l) => goldMap.get(l) ?? 0);
-    traineeValues = attrLabels.map((l) => traineeMap.get(l) ?? 0);
+    goldValues = attrLabels.map((label) => goldMap.get(label) ?? 0);
+    traineeValues = attrLabels.map((label) => traineeMap.get(label) ?? 0);
     const attrDisplayLabels = attrLabels.map((code) => attributeLabel(code));
 
-    if (attrLabels.length && goldValues.length === attrLabels.length && traineeValues.length === attrLabels.length) {
-        charts.attributeComparison = new Chart(document.getElementById('attributeCompareChart'), {
-            type: 'bar',
-            data: {
-                labels: attrDisplayLabels,
-                datasets: [
-                    {
-                        label: 'Gold',
-                        data: goldValues,
-                        backgroundColor: '#6366f1',
-                        borderColor: '#818cf8',
-                        borderWidth: 1
-                    },
-                    {
-                        label: 'Trainee (Valid only)',
-                        data: traineeValues,
-                        backgroundColor: '#f59e0b',
-                        borderColor: '#fbbf24',
-                        borderWidth: 1
-                    }
-                ]
+    const attrCompEl = document.getElementById('attributeCompareChart');
+    if (attrCompEl && attrLabels.length) {
+        const attrCompChart = echarts.init(attrCompEl, null, { renderer: 'canvas' });
+        charts.attributeComparison = attrCompChart;
+        attrCompChart.setOption({
+            backgroundColor: 'transparent',
+            tooltip: {
+                trigger: 'axis',
+                axisPointer: { type: 'shadow' },
+                ...EC.tooltip
             },
-            options: {
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        labels: { color: '#cbd5e1' }
-                    }
-                },
-                scales: {
-                    x: {
-                        ticks: {
-                            color: '#94a3b8',
-                            autoSkip: false,
-                            maxRotation: 65,
-                            minRotation: 65
-                        },
-                        grid: { color: 'rgba(148, 163, 184, 0.10)' }
+            legend: {
+                top: 4,
+                right: 12,
+                ...EC.legend,
+                data: ['Gold', 'Trainee']
+            },
+            grid: { left: 16, right: 16, top: 40, bottom: 80, containLabel: true },
+            xAxis: {
+                type: 'category',
+                data: attrDisplayLabels,
+                axisLabel: { color: EC.mutedColor, rotate: 60, fontSize: 10, interval: 0 },
+                axisLine: { lineStyle: { color: '#2a4060' } },
+                splitLine: { show: false }
+            },
+            yAxis: {
+                type: 'value',
+                axisLabel: { color: EC.mutedColor, fontSize: 11 },
+                splitLine: { lineStyle: { color: EC.gridLine } }
+            },
+            series: [
+                {
+                    name: 'Gold',
+                    type: 'bar',
+                    data: goldValues,
+                    barMaxWidth: 22,
+                    itemStyle: {
+                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                            { offset: 0, color: '#818cf8' },
+                            { offset: 1, color: '#4f46e5' }
+                        ]),
+                        borderRadius: [4, 4, 0, 0]
                     },
-                    y: {
-                        beginAtZero: true,
-                        ticks: { color: '#94a3b8' },
-                        grid: { color: 'rgba(148, 163, 184, 0.16)' }
-                    }
+                    emphasis: { itemStyle: { color: '#a5b4fc' } }
+                },
+                {
+                    name: 'Trainee',
+                    type: 'bar',
+                    data: traineeValues,
+                    barMaxWidth: 22,
+                    itemStyle: {
+                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                            { offset: 0, color: '#fbbf24' },
+                            { offset: 1, color: '#d97706' }
+                        ]),
+                        borderRadius: [4, 4, 0, 0]
+                    },
+                    emphasis: { itemStyle: { color: '#fde68a' } }
                 }
-            }
+            ],
+            animationEasing: 'elasticOut',
+            animationDuration: 950
         });
     }
 
@@ -875,21 +1404,18 @@ function renderCharts(data) {
     document.getElementById('attributeCompareMeta').innerHTML =
         `Counts use all parsed trainee strings. Parse-skipped: <b>${skippedParse}</b>, validation-invalid: <b>${skippedValid}</b>.`;
 
-    /* MINI BAR CHARTS: ONE PER ATTRIBUTE */
     const barsGrid = document.getElementById('attributeBarsGrid');
-    if (barsGrid && attrLabels.length && goldValues.length === attrLabels.length && traineeValues.length === attrLabels.length) {
+    if (barsGrid && attrLabels.length) {
         barsGrid.innerHTML = '';
 
         attrLabels.forEach((label, idx) => {
-            const canvasId = `attrBar_${idx}`;
+            const divId = `attrBar_${idx}`;
             const col = document.createElement('div');
             col.className = 'col-12 col-sm-6 col-lg-4 col-xl-3';
             col.innerHTML = `
                 <div class="p-3 rounded-4 border h-100 attribute-mini-card" role="button" tabindex="0" aria-label="Open ${attributeLabel(label)} count details">
-                    <div class="fw-bold mb-2 text-center">${attributeLabel(label)}</div>
-                    <div style="height: 210px;">
-                        <canvas id="${canvasId}"></canvas>
-                    </div>
+                    <div class="fw-bold mb-2 text-center" style="font-size:0.8rem;">${attributeLabel(label)}</div>
+                    <div id="${divId}" style="height:190px;"></div>
                 </div>
             `;
             barsGrid.appendChild(col);
@@ -906,67 +1432,89 @@ function renderCharts(data) {
                 });
             }
 
-            charts[`attribute_${label}_${idx}`] = new Chart(document.getElementById(canvasId), {
-                type: 'bar',
-                data: {
-                    labels: ['Gold', 'Trainee'],
-                    datasets: [{
-                        data: [goldValues[idx], traineeValues[idx]],
-                        backgroundColor: ['#6366f1', '#f59e0b'],
-                        borderColor: ['#818cf8', '#fbbf24'],
-                        borderWidth: 1,
-                        borderRadius: 6
-                    }]
-                },
-                options: {
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        datalabels: {
-                            color: '#eaf2ff',
-                            anchor: 'end',
-                            align: 'end',
-                            offset: -2,
-                            clamp: true,
-                            clip: false,
-                            font: {
-                                size: 12,
-                                weight: '700'
-                            },
-                            formatter: (value) => `${Number(value || 0)}`
-                        }
+            const miniDiv = document.getElementById(divId);
+            if (miniDiv) {
+                const miniChart = echarts.init(miniDiv, null, { renderer: 'canvas' });
+                charts[`attribute_${label}_${idx}`] = miniChart;
+                const goldValue = goldValues[idx];
+                const traineeValue = traineeValues[idx];
+
+                miniChart.setOption({
+                    backgroundColor: 'transparent',
+                    tooltip: {
+                        ...EC.tooltip,
+                        formatter: (point) => `<b>${point.name}</b>: ${point.value}`
                     },
-                    scales: {
-                        x: {
-                            ticks: {
-                                color: '#cfe0ff',
-                                font: {
-                                    size: 12,
-                                    weight: '700'
+                    grid: { left: 10, right: 10, top: 16, bottom: 10, containLabel: true },
+                    xAxis: {
+                        type: 'category',
+                        data: ['Gold', 'Trainee'],
+                        axisLabel: { color: '#a8c8f0', fontWeight: 'bold', fontSize: 12 },
+                        axisLine: { show: false },
+                        axisTick: { show: false }
+                    },
+                    yAxis: {
+                        type: 'value',
+                        axisLabel: { color: EC.mutedColor, fontSize: 10 },
+                        splitLine: { lineStyle: { color: EC.gridLine } }
+                    },
+                    series: [{
+                        type: 'bar',
+                        data: [
+                            {
+                                value: goldValue,
+                                itemStyle: {
+                                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                                        { offset: 0, color: '#818cf8' },
+                                        { offset: 1, color: '#4f46e5' }
+                                    ]),
+                                    borderRadius: [5, 5, 0, 0]
                                 }
                             },
-                            grid: { display: false }
-                        },
-                        y: {
-                            beginAtZero: true,
-                            grace: '18%',
-                            ticks: {
-                                color: '#dbe7fb',
-                                precision: 0,
-                                font: {
-                                    size: 11,
-                                    weight: '600'
+                            {
+                                value: traineeValue,
+                                itemStyle: {
+                                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                                        { offset: 0, color: '#fbbf24' },
+                                        { offset: 1, color: '#d97706' }
+                                    ]),
+                                    borderRadius: [5, 5, 0, 0]
                                 }
-                            },
-                            grid: { color: 'rgba(148, 163, 184, 0.14)' }
+                            }
+                        ],
+                        barMaxWidth: 40,
+                        label: {
+                            show: true,
+                            position: 'top',
+                            color: '#dbeeff',
+                            fontWeight: 'bold',
+                            fontSize: 12,
+                            formatter: (point) => point.value
                         }
-                    }
-                }
-            });
+                    }],
+                    animationDuration: 700,
+                    animationEasing: 'cubicOut',
+                    animationDelay: () => idx * 30
+                });
+            }
         });
     } else if (barsGrid) {
         barsGrid.innerHTML = '<div class="col-12 text-center small">No attribute comparison data available.</div>';
     }
+
+    if (window._ecResizeHandler) {
+        window.removeEventListener('resize', window._ecResizeHandler);
+    }
+    window._ecResizeHandler = () => {
+        Object.values(charts).forEach((chart) => {
+            try {
+                chart.resize();
+            } catch (error) {
+                // Ignore disposed chart instances.
+            }
+        });
+    };
+    window.addEventListener('resize', window._ecResizeHandler);
 }
 
 /* ---------- PDF Export ---------- */
@@ -982,5 +1530,4 @@ document.getElementById("downloadPdf").addEventListener("click", async function(
     pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
     pdf.save("StepOut_Evaluation.pdf");
 });
-
 

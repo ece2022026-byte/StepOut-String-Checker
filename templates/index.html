@@ -9,15 +9,15 @@
     <!-- Bootstrap -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 
-    <!-- Chart.js (ONLY ONE VERSION) -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+    <!-- ECharts -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
 
     <!-- PDF Export -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.2/anime.min.js"></script>
 
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260312-search-1') }}">
 </head>
 
 <body class="bg-light">
@@ -76,9 +76,7 @@
                     <div class="col-lg-6">
                         <div class="chart-card shadow-sm p-4 bg-white rounded-4">
                             <h5 class="fw-bold mb-4 text-center">Performance Distribution</h5>
-                            <div style="height: 350px;">
-                                <canvas id="pieChart"></canvas>
-                            </div>
+                            <div id="pieChart" style="height: 350px;"></div>
                             <div id="pie-breakdown" class="mt-3 text-center small"></div>
                         </div>
                     </div>
@@ -86,9 +84,7 @@
                     <div class="col-lg-6">
                         <div class="chart-card shadow-sm p-4 bg-white rounded-4">
                             <h5 class="fw-bold mb-4">Errors by Attribute Field</h5>
-                            <div style="height: 350px;">
-                                <canvas id="barChart"></canvas>
-                            </div>
+                            <div id="barChart" style="height: 350px;"></div>
                         </div>
                     </div>
                 </div>
@@ -97,9 +93,7 @@
                     <div class="col-12">
                         <div class="chart-card shadow-sm p-4 bg-white rounded-4">
                             <h5 class="fw-bold mb-4 text-center">Error Density (5-Min Intervals)</h5>
-                            <div style="height: 300px;">
-                                <canvas id="timelineChart"></canvas>
-                            </div>
+                            <div id="timelineChart" style="height: 300px;"></div>
                         </div>
                     </div>
                 </div>
@@ -109,9 +103,7 @@
                         <div class="chart-card shadow-sm p-4 bg-white rounded-4">
                             <h5 class="fw-bold mb-2 text-center">Attribute Count Comparison (Gold vs Trainee)</h5>
                             <div id="attributeCompareMeta" class="text-center small mb-3"></div>
-                            <div style="height: 360px;">
-                                <canvas id="attributeCompareChart"></canvas>
-                            </div>
+                            <div id="attributeCompareChart" style="height: 360px;"></div>
                         </div>
                     </div>
                 </div>
@@ -127,11 +119,15 @@
             </section>
 
             <section id="stringCheckerView" style="display:none;">
+                <div class="search-tools mt-4 mb-3">
+                    <input id="checkerSearchInput" class="form-control" type="text" placeholder="Search mismatch strings, action codes, notes, or fields...">
+                    <div id="checkerSearchMeta" class="small mt-2"></div>
+                </div>
                 <div id="mismatch-section" class="mt-4"></div>
             </section>
 
             <section id="stringAuditView" style="display:none;">
-                <div class="audit-tools mt-4 mb-3">
+                <div class="search-tools mt-4 mb-3">
                     <input id="auditSearchInput" class="form-control" type="text" placeholder="Search any string, field, or value...">
                     <div id="auditSearchMeta" class="small mt-2"></div>
                 </div>
@@ -165,6 +161,10 @@
             </article>
         </div>
         <div id="attributeCountDelta" class="attribute-count-delta"></div>
+        <div class="attribute-team-panel">
+            <div class="attribute-note-head">Team Distribution</div>
+            <div id="attributeCountTeams" class="attribute-team-grid"></div>
+        </div>
         <div class="attribute-note-panel">
             <div class="attribute-note-head">Action-Note Composition</div>
             <div id="attributeCountNotes" class="attribute-note-table"></div>
@@ -172,7 +172,7 @@
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='app.js') }}" defer></script>
+<script src="{{ url_for('static', filename='app.js', v='20260312-search-1') }}" defer></script>
 
 </body>
 </html>
