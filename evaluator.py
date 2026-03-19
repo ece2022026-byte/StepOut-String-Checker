@@ -6,6 +6,20 @@ RECEIVER_ACTIONS = {a for a in ACTION_RULES.keys() if a.startswith("X")}
 SPECIAL_PRESENCE_ACTIONS = {"FK", "OG", "CN", "GK", "F", "YC", "RC", "OFF", "HB", "PK"}
 SPECIAL_NOTE_KEY = "__PRESENCE__"
 TEAM_BUCKETS = ("A", "B", "OTHER")
+OPEN_PLAY_PASSING_ACTIONS = {"SP", "LP", "TB", "C"}
+RECEIVING_PASSING_ACTIONS = {"XSP", "XLP", "XTB", "XC"}
+SHOOTING_ACTIONS = {"LS", "CS", "H"}
+BALL_PROGRESS_ACTIONS = {"PC", "DC", "DR"}
+RECEIVING_PROGRESS_ACTIONS = {"XDR"}
+DEFENSIVE_ACTIONS = {"ST", "SL", "IN", "CL", "PR"}
+RECEIVING_DEFENSIVE_ACTIONS = {"XST", "XSL", "XIN", "XPR"}
+DUEL_ACTIONS = {"GD", "AD"}
+RECEIVING_DUEL_ACTIONS = {"XGD", "XAD"}
+GOALKEEPING_ACTIONS = {"GS", "GH"}
+GOALKEEPER_DISTRIBUTION_ACTIONS = {"GT"}
+RECEIVING_GOALKEEPER_DISTRIBUTION_ACTIONS = {"XGT"}
+THROW_IN_ACTIONS = {"THW"}
+RECEIVING_THROW_IN_ACTIONS = {"XTHW"}
 KEY_ACTION_SECTIONS = [
     {
         "id": "passing",
@@ -209,6 +223,89 @@ def _build_attribute_team_note_breakdown(gold_list, trainee_list):
     return breakdown
 
 
+def _build_attribute_string_library(gold_list, trainee_list):
+    library = {
+        action: {
+            "code": action,
+            "label": ACTION_DISPLAY_NAMES.get(action, action),
+            "gold_total": 0,
+            "trainee_total": 0,
+            "teams": {
+                team: {"gold": [], "trainee": []}
+                for team in TEAM_BUCKETS
+            },
+        }
+        for action in ACTION_RULES.keys()
+    }
+
+    for source_name, source_list in (("gold", gold_list), ("trainee", trainee_list)):
+        for raw in source_list:
+            parsed = _safe_parse(raw)
+            if not parsed:
+                continue
+
+            team = str(parsed.get("team", "")).upper()
+            team_bucket = team if team in {"A", "B"} else "OTHER"
+            player_tag = f"{team if team else '?'}-{parsed.get('jersey_number', '?')}"
+            timestamp = str(parsed.get("timestamp", "") or "")
+            note = str(parsed.get("attribute", "") or "")
+            foot = str(parsed.get("foot", "") or "")
+            special_action = str(parsed.get("special_action", "") or "")
+
+            record = {
+                "raw": raw,
+                "player": player_tag,
+                "timestamp": timestamp,
+                "note": note,
+                "foot": foot,
+                "special_action": special_action,
+            }
+
+            for action in _counted_actions_for_string(parsed):
+                if action not in library:
+                    continue
+                library[action]["teams"][team_bucket][source_name].append(record)
+                total_key = "gold_total" if source_name == "gold" else "trainee_total"
+                library[action][total_key] += 1
+
+    return library
+
+
+def _build_timeline_chart(mismatched_details):
+    """
+    Builds 5-minute error-density buckets for the frontend.
+    """
+    if not mismatched_details:
+        return {"labels": [], "values": []}
+
+    error_minutes = []
+    for item in mismatched_details:
+        parsed = _safe_parse(item.get("gold", ""))
+        if not parsed:
+            continue
+
+        try:
+            hours, minutes, _seconds = map(int, str(parsed.get("timestamp", "0:00:00")).split(":"))
+        except Exception:
+            continue
+
+        error_minutes.append((hours * 60) + minutes)
+
+    if not error_minutes:
+        return {"labels": [], "values": []}
+
+    max_time = max(max(error_minutes) + 5, 95)
+    bins = list(range(0, max_time + 5, 5))
+    labels = []
+    values = []
+
+    for start, end in zip(bins[:-1], bins[1:]):
+        labels.append(f"{start}-{end}")
+        values.append(sum(1 for minute in error_minutes if start <= minute < end))
+
+    return {"labels": labels, "values": values}
+
+
 def _safe_parse(raw):
     try:
         return parse_string(raw)
@@ -259,6 +356,39 @@ def _time_to_ms_fast(ts):
         return None
 
 
+def _action_family(action):
+    action = str(action or "").upper()
+    if action in OPEN_PLAY_PASSING_ACTIONS:
+        return "passing"
+    if action in RECEIVING_PASSING_ACTIONS:
+        return "receiving_passing"
+    if action in SHOOTING_ACTIONS:
+        return "shooting"
+    if action in BALL_PROGRESS_ACTIONS:
+        return "ball_progression"
+    if action in RECEIVING_PROGRESS_ACTIONS:
+        return "receiving_progression"
+    if action in DEFENSIVE_ACTIONS:
+        return "defensive"
+    if action in RECEIVING_DEFENSIVE_ACTIONS:
+        return "receiving_defensive"
+    if action in DUEL_ACTIONS:
+        return "duel"
+    if action in RECEIVING_DUEL_ACTIONS:
+        return "receiving_duel"
+    if action in GOALKEEPING_ACTIONS:
+        return "goalkeeping"
+    if action in GOALKEEPER_DISTRIBUTION_ACTIONS:
+        return "goalkeeper_distribution"
+    if action in RECEIVING_GOALKEEPER_DISTRIBUTION_ACTIONS:
+        return "receiving_goalkeeper_distribution"
+    if action in THROW_IN_ACTIONS:
+        return "throw_in"
+    if action in RECEIVING_THROW_IN_ACTIONS:
+        return "receiving_throw_in"
+    return action
+
+
 def _pair_score_fast(gold_parsed, trainee_parsed, gold_ms, trainee_ms, time_tolerance):
     """
     Fast alignment scorer used inside DP.
@@ -277,6 +407,11 @@ def _pair_score_fast(gold_parsed, trainee_parsed, gold_ms, trainee_ms, time_tole
     trainee_is_receiver = trainee_action in RECEIVER_ACTIONS
     if gold_is_receiver != trainee_is_receiver:
         return -10.0
+
+    gold_family = _action_family(gold_action)
+    trainee_family = _action_family(trainee_action)
+    if gold_family != trainee_family:
+        return -9.0
 
     score = 0.0
 
@@ -654,6 +789,7 @@ def evaluate_match(gold_list, trainee_list, time_tolerance=2000):
     attribute_note_breakdown = _build_attribute_note_breakdown(gold_list, trainee_list)
     attribute_team_breakdown = _build_attribute_team_breakdown(gold_list, trainee_list)
     attribute_team_note_breakdown = _build_attribute_team_note_breakdown(gold_list, trainee_list)
+    attribute_string_library = _build_attribute_string_library(gold_list, trainee_list)
 
     correct_count = 0
     matched_events = 0
@@ -727,6 +863,7 @@ def evaluate_match(gold_list, trainee_list, time_tolerance=2000):
         matched_events=matched_events,
         alignment_rows=alignment_rows,
     )
+    timeline_chart = _build_timeline_chart(mismatched_details)
 
     return {
         "total_gold": total_gold,
@@ -738,6 +875,7 @@ def evaluate_match(gold_list, trainee_list, time_tolerance=2000):
         "mismatched_details": mismatched_details,
         "alignment_rows": alignment_rows,
         "field_errors": field_errors,
+        "timeline_chart": timeline_chart,
         "gold_attribute_counts": gold_attribute_counts,
         "trainee_attribute_counts": trainee_attribute_counts,
         "trainee_attribute_counts_valid": trainee_attribute_counts_valid,
@@ -745,6 +883,7 @@ def evaluate_match(gold_list, trainee_list, time_tolerance=2000):
         "attribute_note_breakdown": attribute_note_breakdown,
         "attribute_team_breakdown": attribute_team_breakdown,
         "attribute_team_note_breakdown": attribute_team_note_breakdown,
+        "attribute_string_library": attribute_string_library,
         "attribute_display_names": ACTION_DISPLAY_NAMES,
         "insights": insights,
         "timestamp_within_tolerance_count": timestamp_within_tolerance_count,

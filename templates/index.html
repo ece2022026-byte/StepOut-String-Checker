@@ -17,22 +17,29 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.2/anime.min.js"></script>
 
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260312-search-1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260317-attribute-explorer-1') }}">
 </head>
 
-<body class="bg-light">
+<body class="bg-light" data-theme="dark">
 
 <div class="dashboard-shell">
     <aside class="left-sidebar">
         <div class="brand-area">
-            <img src="{{ url_for('static', filename='stepout-logo.svg') }}" alt="StepOut" class="brand-logo">
+            <img
+                id="brandLogo"
+                src="{{ url_for('static', filename='stepout-logo.svg') }}"
+                data-dark-src="{{ url_for('static', filename='stepout-logo.svg') }}"
+                data-light-src="{{ url_for('static', filename='StepOut-vertical-logo-black.png') }}"
+                alt="StepOut"
+                class="brand-logo"
+            >
         </div>
         <div class="sidebar-section-title">Navigation</div>
         <nav class="sidebar-nav">
             <a class="sidebar-link active" href="#" data-view="home">Home</a>
             <a class="sidebar-link" href="#" data-view="string-checker">String Checker</a>
             <a class="sidebar-link" href="#" data-view="string-audit">String Audit</a>
-            <a class="sidebar-link" href="#">Reports</a>
+            <a class="sidebar-link" href="#" data-view="attribute-explorer">Attribute Explorer</a>
         </nav>
         <div class="sidebar-card">
             <div class="sidebar-card-title">Analyst Workspace</div>
@@ -46,20 +53,45 @@
                 <h2 class="topbar-title m-0">StepOut String Checker</h2>
                 <div class="topbar-breadcrumb">Dashboard / String Validation</div>
             </div>
-            <button id="downloadPdf" class="btn btn-dark fw-bold px-4" style="display:none;">Export PDF</button>
+            <div class="topbar-actions">
+                <button id="themeToggle" class="btn btn-dark fw-bold px-3 theme-toggle-btn" type="button" aria-label="Switch color theme">
+                    <span class="theme-toggle-indicator" aria-hidden="true"></span>
+                    <span class="theme-toggle-copy">
+                        <span class="theme-toggle-caption">Theme</span>
+                        <span id="themeToggleText" class="theme-toggle-text">Light Mode</span>
+                    </span>
+                </button>
+                <button id="downloadPdf" class="btn btn-dark fw-bold px-4" style="display:none;">Export PDF</button>
+            </div>
         </header>
 
         <section class="form-panel card border-0 shadow-sm mb-4">
             <div class="card-body">
-                <form id="uploadForm">
+                <form id="uploadForm" enctype="multipart/form-data">
                     <div class="row">
                         <div class="col-md-6 mb-3">
                             <label class="form-label fw-bold">Gold Standard Strings</label>
                             <textarea id="gold_text" class="form-control" name="gold_text" rows="3"></textarea>
+                            <div class="form-text">Paste strings here or upload a `.txt` / `.docx` file. Uploaded file takes priority.</div>
+                            <input
+                                id="gold_file"
+                                class="form-control mt-2"
+                                type="file"
+                                name="gold_file"
+                                accept=".txt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                            >
                         </div>
                         <div class="col-md-6 mb-3">
                             <label class="form-label fw-bold">Trainee Strings</label>
                             <textarea id="trainee_text" class="form-control" name="trainee_text" rows="3"></textarea>
+                            <div class="form-text">Paste strings here or upload a `.txt` / `.docx` file. Uploaded file takes priority.</div>
+                            <input
+                                id="trainee_file"
+                                class="form-control mt-2"
+                                type="file"
+                                name="trainee_file"
+                                accept=".txt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                            >
                         </div>
                     </div>
                     <button type="submit" class="btn btn-primary w-100 fw-bold">Run Full Evaluation</button>
@@ -133,6 +165,22 @@
                 </div>
                 <div id="audit-section"></div>
             </section>
+
+            <section id="attributeExplorerView" style="display:none;">
+                <div class="attribute-explorer-shell mt-4">
+                    <aside class="attribute-explorer-list-panel">
+                        <div class="attribute-explorer-panel-top">
+                            <div class="attribute-explorer-kicker">Attribute Explorer</div>
+                            <h3 class="attribute-explorer-panel-title">Browse Attributes By Team</h3>
+                            <p class="attribute-explorer-panel-sub">Open any attribute to review Team A and Team B strings side-by-side for Gold and Trainee.</p>
+                        </div>
+                        <div id="attributeExplorerList" class="attribute-explorer-list"></div>
+                    </aside>
+                    <section class="attribute-explorer-detail-panel">
+                        <div id="attributeExplorerDetail"></div>
+                    </section>
+                </div>
+            </section>
         </div>
     </main>
 </div>
@@ -172,7 +220,25 @@
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='app.js', v='20260312-search-1') }}" defer></script>
+<div id="exportNameModal" class="export-name-modal" aria-hidden="true">
+    <div class="export-name-modal-card" role="dialog" aria-modal="true" aria-labelledby="exportNameTitle">
+        <button id="exportNameModalClose" class="attribute-count-close" type="button" aria-label="Close">x</button>
+        <div class="attribute-count-kicker">PDF Export</div>
+        <h4 id="exportNameTitle" class="attribute-count-title">Save Report With Analyst Name</h4>
+        <label for="analystNameInput" class="form-label export-name-label">Analyst Name</label>
+        <input id="analystNameInput" class="form-control export-name-input" type="text" maxlength="80" placeholder="Enter analyst name">
+        <div class="export-name-preview-wrap">
+            <div class="export-name-preview-label">Filename Preview</div>
+            <div id="exportFilePreview" class="export-name-preview">StepOut_Evaluation.pdf</div>
+        </div>
+        <div class="export-name-actions">
+            <button id="exportNameCancel" class="btn btn-dark fw-bold px-4" type="button">Cancel</button>
+            <button id="exportNameConfirm" class="btn btn-primary fw-bold px-4" type="button">Export PDF</button>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='app.js', v='20260317-attribute-explorer-1') }}" defer></script>
 
 </body>
 </html>

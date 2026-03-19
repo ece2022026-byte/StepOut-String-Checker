@@ -1,11 +1,17 @@
 let charts = {};
 let latestAlignmentRows = [];
 let latestMismatchRows = [];
+let latestEvaluationData = null;
 let hasEvaluationRun = false;
+let activeView = "home";
+let mismatchRenderToken = 0;
+let auditRenderToken = 0;
 let keyActionErrorStore = {};
 let attributeNoteBreakdown = {};
 let attributeTeamBreakdown = {};
 let attributeTeamNoteBreakdown = {};
+let attributeStringLibrary = {};
+let selectedAttributeExplorerCode = "";
 const HAS_ANIME = typeof window !== "undefined" && typeof window.anime === "function";
 const PREFERS_REDUCED_MOTION =
     typeof window !== "undefined"
@@ -61,10 +67,15 @@ const ATTRIBUTE_FULL_NAMES = {
 let attributeDisplayNames = { ...ATTRIBUTE_FULL_NAMES };
 const STORAGE_KEYS = {
     gold: "stepout_gold_text",
-    trainee: "stepout_trainee_text"
+    trainee: "stepout_trainee_text",
+    analystName: "stepout_analyst_name",
+    theme: "stepout_theme"
 };
 const SPECIAL_PRESENCE_ACTIONS = new Set(["FK", "OG", "CN", "GK", "F", "YC", "RC", "OFF", "HB", "PK"]);
 const SPECIAL_NOTE_KEY = "__PRESENCE__";
+const EXPLORER_TEAM_ORDER = ["A", "B", "OTHER"];
+const MAX_ANIMATED_ELEMENTS = 18;
+const ROW_RENDER_CHUNK_SIZE = 60;
 
 function motionRun(config) {
     if (!MOTION_ENABLED) return;
@@ -159,6 +170,14 @@ function highlightText(value, terms) {
     return result;
 }
 
+function debounce(fn, delay = 160) {
+    let timeoutId = null;
+    return (...args) => {
+        window.clearTimeout(timeoutId);
+        timeoutId = window.setTimeout(() => fn(...args), delay);
+    };
+}
+
 function rowMatchesQuery(parts, terms) {
     if (!terms.length) return true;
     const haystack = parts
@@ -196,6 +215,104 @@ function teamLabel(teamCode) {
     if (teamCode === "A") return "Team A";
     if (teamCode === "B") return "Team B";
     return "Other";
+}
+
+function sanitizeFilenameSegment(value) {
+    const cleaned = String(value ?? "")
+        .trim()
+        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "")
+        .replace(/\s+/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "");
+    return cleaned.slice(0, 64);
+}
+
+function buildExportFilename(analystName) {
+    const safeName = sanitizeFilenameSegment(analystName);
+    return safeName ? `${safeName}_StepOut_Evaluation.pdf` : "StepOut_Evaluation.pdf";
+}
+
+function getStoredTheme() {
+    try {
+        const storedTheme = localStorage.getItem(STORAGE_KEYS.theme);
+        return storedTheme === "light" ? "light" : "dark";
+    } catch (err) {
+        return "dark";
+    }
+}
+
+function getCssVar(name, fallback = "") {
+    const value = getComputedStyle(document.body).getPropertyValue(name).trim();
+    return value || fallback;
+}
+
+function syncBrandLogo(theme) {
+    const brandLogo = document.getElementById("brandLogo");
+    if (!brandLogo) return;
+    const darkSrc = brandLogo.getAttribute("data-dark-src") || brandLogo.getAttribute("src");
+    const lightSrc = brandLogo.getAttribute("data-light-src") || darkSrc;
+    brandLogo.setAttribute("src", theme === "light" ? lightSrc : darkSrc);
+}
+
+function updateThemeToggleUi(theme) {
+    const themeToggle = document.getElementById("themeToggle");
+    const themeToggleText = document.getElementById("themeToggleText");
+    if (!themeToggle || !themeToggleText) return;
+
+    const nextMode = theme === "light" ? "Dark Mode" : "Light Mode";
+    themeToggleText.textContent = nextMode;
+    themeToggle.setAttribute("aria-label", `Switch to ${nextMode.toLowerCase()}`);
+    themeToggle.setAttribute("data-theme", theme);
+}
+
+function applyTheme(theme, options = {}) {
+    const { persist = true, rerenderCharts = true } = options;
+    const safeTheme = theme === "light" ? "light" : "dark";
+    document.body.setAttribute("data-theme", safeTheme);
+    document.documentElement.style.colorScheme = safeTheme;
+    syncBrandLogo(safeTheme);
+    updateThemeToggleUi(safeTheme);
+
+    if (persist) {
+        try {
+            localStorage.setItem(STORAGE_KEYS.theme, safeTheme);
+        } catch (err) {
+            // Ignore storage access errors silently.
+        }
+    }
+
+    if (rerenderCharts && latestEvaluationData) {
+        renderCharts(latestEvaluationData);
+    }
+}
+
+function toggleTheme() {
+    const currentTheme = document.body.getAttribute("data-theme") === "light" ? "light" : "dark";
+    applyTheme(currentTheme === "light" ? "dark" : "light");
+}
+
+function getChartTheme() {
+    const isLightTheme = document.body.getAttribute("data-theme") === "light";
+    return {
+        isLightTheme,
+        mutedColor: getCssVar("--chart-muted", isLightTheme ? "#60748e" : "#7a96bb"),
+        gridLine: getCssVar("--chart-grid", isLightTheme ? "rgba(120, 142, 172, 0.2)" : "rgba(120, 160, 210, 0.12)"),
+        axisLineColor: getCssVar("--chart-axis", isLightTheme ? "#c9d8e7" : "#2a4060"),
+        tooltip: {
+            backgroundColor: getCssVar("--chart-tooltip-bg", isLightTheme ? "#ffffff" : "#0f1c2e"),
+            borderColor: getCssVar("--chart-tooltip-border", isLightTheme ? "#cbdcec" : "#2a4060"),
+            textStyle: { color: getCssVar("--chart-tooltip-text", isLightTheme ? "#17304c" : "#dceeff"), fontSize: 13 }
+        },
+        legend: {
+            textStyle: { color: getCssVar("--chart-legend", isLightTheme ? "#556b87" : "#a8c0dc"), fontSize: 12 }
+        },
+        strongAxisLabel: isLightTheme ? "#35516f" : "#a8c8f0",
+        valueLabel: isLightTheme ? "#7a3b52" : "#ffb3c2",
+        timelineValueLabel: isLightTheme ? "#1b7aa4" : "#7dd3fc",
+        miniValueLabel: isLightTheme ? "#304863" : "#dbeeff",
+        pieShadow: isLightTheme ? "rgba(28, 52, 87, 0.18)" : "rgba(0, 0, 0, 0.5)",
+        timelineShadow: isLightTheme ? "rgba(14, 165, 233, 0.24)" : "rgba(14,165,233,0.4)"
+    };
 }
 
 function hideAttributeCountModal() {
@@ -417,14 +534,17 @@ function showAttributeCountModal(attributeCode, goldCount, traineeCount) {
 function restoreSavedInputs() {
     const goldBox = document.getElementById("gold_text");
     const traineeBox = document.getElementById("trainee_text");
+    const analystNameInput = document.getElementById("analystNameInput");
     if (!goldBox || !traineeBox) return;
 
     try {
         const savedGold = localStorage.getItem(STORAGE_KEYS.gold);
         const savedTrainee = localStorage.getItem(STORAGE_KEYS.trainee);
+        const savedAnalystName = localStorage.getItem(STORAGE_KEYS.analystName);
 
         if (savedGold !== null) goldBox.value = savedGold;
         if (savedTrainee !== null) traineeBox.value = savedTrainee;
+        if (analystNameInput && savedAnalystName !== null) analystNameInput.value = savedAnalystName;
     } catch (err) {
         // Ignore storage access errors silently.
     }
@@ -460,12 +580,20 @@ function announceAnimationStatus() {
     console.warn("Anime.js not loaded. Check internet/CDN access if no motion is visible.");
 }
 
+applyTheme(getStoredTheme(), { persist: false, rerenderCharts: false });
 restoreSavedInputs();
 attachInputPersistence();
 announceAnimationStatus();
 
 const attributeCountModal = document.getElementById("attributeCountModal");
 const attributeCountModalClose = document.getElementById("attributeCountModalClose");
+const exportNameModal = document.getElementById("exportNameModal");
+const exportNameModalClose = document.getElementById("exportNameModalClose");
+const exportNameCancel = document.getElementById("exportNameCancel");
+const exportNameConfirm = document.getElementById("exportNameConfirm");
+const analystNameInput = document.getElementById("analystNameInput");
+const exportFilePreview = document.getElementById("exportFilePreview");
+const themeToggle = document.getElementById("themeToggle");
 if (attributeCountModalClose) {
     attributeCountModalClose.addEventListener("click", hideAttributeCountModal);
 }
@@ -476,9 +604,129 @@ if (attributeCountModal) {
         }
     });
 }
+
+function updateExportFilenamePreview() {
+    if (!exportFilePreview || !analystNameInput) return;
+    exportFilePreview.textContent = buildExportFilename(analystNameInput.value);
+}
+
+function hideExportNameModal() {
+    if (!exportNameModal) return;
+
+    const finalizeHide = () => {
+        exportNameModal.classList.remove("show");
+        exportNameModal.setAttribute("aria-hidden", "true");
+        document.body.classList.remove("modal-open");
+        exportNameModal.style.opacity = "";
+        const card = exportNameModal.querySelector(".export-name-modal-card");
+        if (card) {
+            card.style.opacity = "";
+            card.style.transform = "";
+        }
+    };
+
+    if (!MOTION_ENABLED || !exportNameModal.classList.contains("show")) {
+        finalizeHide();
+        return;
+    }
+
+    const card = exportNameModal.querySelector(".export-name-modal-card");
+    motionRun({
+        targets: exportNameModal,
+        opacity: [1, 0],
+        duration: 170,
+        easing: "easeInOutQuad"
+    });
+    motionRun({
+        targets: card,
+        opacity: [1, 0],
+        translateY: [0, 12],
+        scale: [1, 0.96],
+        duration: 190,
+        easing: "easeInOutQuad",
+        complete: finalizeHide
+    });
+}
+
+function showExportNameModal() {
+    if (!exportNameModal) return;
+    updateExportFilenamePreview();
+    exportNameModal.classList.add("show");
+    exportNameModal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("modal-open");
+
+    const focusInput = () => {
+        if (analystNameInput) {
+            analystNameInput.focus();
+            analystNameInput.select();
+        }
+    };
+
+    if (!MOTION_ENABLED) {
+        focusInput();
+        return;
+    }
+
+    const card = exportNameModal.querySelector(".export-name-modal-card");
+    motionRun({
+        targets: exportNameModal,
+        opacity: [0, 1],
+        duration: 180,
+        easing: "easeOutQuad"
+    });
+    motionRun({
+        targets: card,
+        opacity: [0, 1],
+        translateY: [16, 0],
+        scale: [0.95, 1],
+        duration: 250,
+        easing: "easeOutCubic",
+        complete: focusInput
+    });
+}
+
+if (exportNameModalClose) {
+    exportNameModalClose.addEventListener("click", hideExportNameModal);
+}
+if (exportNameCancel) {
+    exportNameCancel.addEventListener("click", hideExportNameModal);
+}
+if (exportNameModal) {
+    exportNameModal.addEventListener("click", (event) => {
+        if (event.target === exportNameModal) {
+            hideExportNameModal();
+        }
+    });
+}
+if (analystNameInput) {
+    analystNameInput.addEventListener("input", () => {
+        updateExportFilenamePreview();
+        try {
+            localStorage.setItem(STORAGE_KEYS.analystName, analystNameInput.value);
+        } catch (err) {
+            // Ignore storage access errors silently.
+        }
+    });
+    analystNameInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            if (exportNameConfirm) {
+                exportNameConfirm.click();
+            }
+        }
+    });
+}
+updateExportFilenamePreview();
+if (themeToggle) {
+    themeToggle.addEventListener("click", () => {
+        animateTapFeedback(themeToggle, 0.985);
+        toggleTheme();
+    });
+}
 document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
         hideAttributeCountModal();
+        hideExportNameModal();
     }
 });
 
@@ -486,7 +734,11 @@ function switchSidebarView(viewName) {
     const homeView = document.getElementById("homeView");
     const checkerView = document.getElementById("stringCheckerView");
     const auditView = document.getElementById("stringAuditView");
-    if (!homeView || !checkerView || !auditView) return;
+    const explorerView = document.getElementById("attributeExplorerView");
+    if (!homeView || !checkerView || !auditView || !explorerView) return;
+
+    if (viewName !== "string-checker") mismatchRenderToken += 1;
+    if (viewName !== "string-audit") auditRenderToken += 1;
 
     const navLinks = document.querySelectorAll(".sidebar-link[data-view]");
     navLinks.forEach((link) => {
@@ -497,14 +749,31 @@ function switchSidebarView(viewName) {
         homeView.style.display = "none";
         checkerView.style.display = "block";
         auditView.style.display = "none";
+        explorerView.style.display = "none";
     } else if (viewName === "string-audit") {
         homeView.style.display = "none";
         checkerView.style.display = "none";
         auditView.style.display = "block";
+        explorerView.style.display = "none";
+    } else if (viewName === "attribute-explorer") {
+        homeView.style.display = "none";
+        checkerView.style.display = "none";
+        auditView.style.display = "none";
+        explorerView.style.display = "block";
     } else {
         homeView.style.display = "block";
         checkerView.style.display = "none";
         auditView.style.display = "none";
+        explorerView.style.display = "none";
+    }
+
+    activeView = viewName;
+    if (viewName === "string-checker") {
+        renderMismatchSection();
+    } else if (viewName === "string-audit") {
+        renderAuditSection();
+    } else if (viewName === "attribute-explorer") {
+        renderAttributeExplorerSection();
     }
 
     animateSidebarView(viewName);
@@ -512,7 +781,7 @@ function switchSidebarView(viewName) {
 
 function animateStaggered(selector, baseDelay = 0, distance = 14, duration = 640, scaleFrom = 0.97) {
     if (!MOTION_ENABLED) return;
-    const elements = document.querySelectorAll(selector);
+    const elements = Array.from(document.querySelectorAll(selector)).slice(0, MAX_ANIMATED_ELEMENTS);
     if (!elements.length) return;
 
     motionRun({
@@ -522,7 +791,7 @@ function animateStaggered(selector, baseDelay = 0, distance = 14, duration = 640
         scale: [scaleFrom, 1],
         easing: "easeOutCubic",
         duration,
-        delay: (_, i) => baseDelay + (i * 70)
+        delay: (_, i) => baseDelay + (i * 38)
     });
 }
 
@@ -541,6 +810,10 @@ function animateSidebarView(viewName) {
         animateStaggered("#stringAuditView .search-tools, #audit-section .comparison-header, #audit-section .audit-card, #audit-section .comparison-empty", 0, 18, 560, 0.97);
         return;
     }
+    if (viewName === "attribute-explorer") {
+        animateStaggered("#attributeExplorerView .attribute-explorer-list-panel, #attributeExplorerView .attribute-explorer-card, #attributeExplorerView .attribute-explorer-detail-panel, #attributeExplorerView .attribute-explorer-team-board, #attributeExplorerView .attribute-explorer-string-card", 0, 18, 560, 0.98);
+        return;
+    }
     animateStaggered("#summary-section .row > *, #insights-section .insight-card, #insights-section .insight-chip, #insights-section .key-action-card, #homeView .chart-card", 0, 16, 560, 0.98);
 }
 
@@ -551,6 +824,7 @@ function animateEvaluationRender() {
     animateStaggered("#homeView .chart-card", 200, 14, 520, 0.99);
     animateStaggered("#stringCheckerView .search-tools, #mismatch-section .comparison-header, #mismatch-section .comparison-card, #mismatch-section .comparison-empty", 240, 20, 620, 0.97);
     animateStaggered("#stringAuditView .search-tools, #audit-section .comparison-header, #audit-section .audit-card, #audit-section .comparison-empty", 300, 20, 620, 0.97);
+    animateStaggered("#attributeExplorerView .attribute-explorer-list-panel, #attributeExplorerView .attribute-explorer-card, #attributeExplorerView .attribute-explorer-detail-panel, #attributeExplorerView .attribute-explorer-team-board, #attributeExplorerView .attribute-explorer-string-card", 340, 18, 620, 0.98);
 }
 
 function animateChartPanels() {
@@ -592,6 +866,93 @@ function renderIssueChips(entries, terms, chipClass, fieldClass, textClass) {
     `;
 }
 
+function buildMismatchCardHtml(item, index, terms, query, searchMatched = null) {
+    const errors = Object.entries(item.errors || {});
+    const warnings = Object.entries(item.warnings || {});
+    const isMatch = searchMatched ?? rowMatchesQuery([
+        item.gold || '',
+        item.trainee || '',
+        JSON.stringify(item.errors || {}),
+        JSON.stringify(item.warnings || {})
+    ], terms);
+    const searchClass = query ? (isMatch ? " search-hit" : " search-muted") : "";
+
+    return `
+        <article class="comparison-card${searchClass} mb-3">
+            <div class="comparison-card-head">
+                <span class="comparison-id">Mismatch #${index + 1}</span>
+                <span class="comparison-meta">${errors.length} field${errors.length === 1 ? '' : 's'} differ</span>
+            </div>
+            <div class="comparison-grid">
+                <div class="comparison-side comparison-side-gold">
+                    <div class="comparison-label">Gold Standard</div>
+                    <pre class="comparison-string">${highlightText(item.gold, terms)}</pre>
+                </div>
+                <div class="comparison-side comparison-side-trainee">
+                    <div class="comparison-label">Trainee Output</div>
+                    <pre class="comparison-string">${highlightText(item.trainee, terms)}</pre>
+                </div>
+            </div>
+            ${renderIssueChips(errors, terms, 'error-chip', 'error-field', 'error-text')}
+            ${renderIssueChips(warnings, terms, 'warning-chip', 'warning-field', 'warning-text')}
+        </article>
+    `;
+}
+
+function buildAuditCardHtml(row, index, terms, query, searchMatched = null) {
+    const status = row.status || 'matched';
+    const errors = Object.entries(row.errors || {});
+    const warnings = Object.entries(row.warnings || {});
+    const isMatch = searchMatched ?? rowMatchesQuery([
+        row.status || '',
+        row.gold || '',
+        row.trainee || '',
+        JSON.stringify(row.errors || {}),
+        JSON.stringify(row.warnings || {})
+    ], terms);
+    const searchClass = query ? (isMatch ? " search-hit" : " search-muted") : "";
+
+    return `
+        <article class="audit-card audit-${status}${searchClass} mb-3">
+            <div class="audit-head">
+                <span class="audit-index">Row #${index + 1}</span>
+                <span class="audit-status">${highlightText(status.toUpperCase(), terms)}</span>
+            </div>
+            <div class="comparison-grid">
+                <div class="comparison-side comparison-side-gold">
+                    <div class="comparison-label">Gold</div>
+                    <pre class="comparison-string">${highlightText(row.gold ?? '(none)', terms)}</pre>
+                </div>
+                <div class="comparison-side comparison-side-trainee">
+                    <div class="comparison-label">Trainee</div>
+                    <pre class="comparison-string">${highlightText(row.trainee ?? '(none)', terms)}</pre>
+                </div>
+            </div>
+            ${renderIssueChips(errors, terms, 'error-chip', 'error-field', 'error-text')}
+            ${renderIssueChips(warnings, terms, 'warning-chip', 'warning-field', 'warning-text')}
+        </article>
+    `;
+}
+
+function appendHtmlInChunks(host, items, buildHtml, renderTokenRef, token, chunkSize = ROW_RENDER_CHUNK_SIZE) {
+    let cursor = 0;
+
+    const appendChunk = () => {
+        if (!host || renderTokenRef() !== token) return;
+        const nextItems = items.slice(cursor, cursor + chunkSize);
+        if (!nextItems.length) return;
+
+        host.insertAdjacentHTML('beforeend', nextItems.map(buildHtml).join(''));
+        cursor += chunkSize;
+
+        if (cursor < items.length) {
+            window.requestAnimationFrame(appendChunk);
+        }
+    };
+
+    window.requestAnimationFrame(appendChunk);
+}
+
 function renderMismatchSection() {
     const container = document.getElementById("mismatch-section");
     const input = document.getElementById("checkerSearchInput");
@@ -611,18 +972,28 @@ function renderMismatchSection() {
         `;
         return;
     }
-    const indexedRows = rows.map((item, index) => ({ item, index }));
-    const matchedCount = indexedRows.filter(({ item }) => rowMatchesQuery([
-        item.gold || '',
-        item.trainee || '',
-        JSON.stringify(item.errors || {}),
-        JSON.stringify(item.warnings || {})
-    ], terms)).length;
+    const indexedRows = rows.map((item, index) => {
+        const searchMatched = rowMatchesQuery([
+            item.gold || '',
+            item.trainee || '',
+            JSON.stringify(item.errors || {}),
+            JSON.stringify(item.warnings || {})
+        ], terms);
+        return { item, index, searchMatched };
+    });
+    const matchedCount = indexedRows.filter(({ searchMatched }) => searchMatched).length;
+    const orderedRows = query
+        ? [
+            ...indexedRows.filter(({ searchMatched }) => searchMatched),
+            ...indexedRows.filter(({ searchMatched }) => !searchMatched)
+        ]
+        : indexedRows;
 
     meta.textContent = query
-        ? `${matchedCount} of ${rows.length} mismatch row(s) matched "${query}". Showing all rows.`
+        ? `${matchedCount} of ${rows.length} mismatch row(s) matched "${query}". Matched rows are shown first; others stay below.`
         : `Showing all ${rows.length} mismatch row(s).`;
 
+    const token = ++mismatchRenderToken;
     let logHtml = `
         <div class="comparison-header mb-3">
             <h3 class="comparison-title m-0">Detailed String Comparison</h3>
@@ -638,41 +1009,20 @@ function renderMismatchSection() {
             </div>
         `;
     } else {
-        indexedRows.forEach(({ item, index }) => {
-            const errors = Object.entries(item.errors || {});
-            const warnings = Object.entries(item.warnings || {});
-            const isMatch = rowMatchesQuery([
-                item.gold || '',
-                item.trainee || '',
-                JSON.stringify(item.errors || {}),
-                JSON.stringify(item.warnings || {})
-            ], terms);
-            const searchClass = query ? (isMatch ? " search-hit" : " search-muted") : "";
-
-            logHtml += `
-                <article class="comparison-card${searchClass} mb-3">
-                    <div class="comparison-card-head">
-                        <span class="comparison-id">Mismatch #${index + 1}</span>
-                        <span class="comparison-meta">${errors.length} field${errors.length === 1 ? '' : 's'} differ</span>
-                    </div>
-                    <div class="comparison-grid">
-                        <div class="comparison-side comparison-side-gold">
-                            <div class="comparison-label">Gold Standard</div>
-                            <pre class="comparison-string">${highlightText(item.gold, terms)}</pre>
-                        </div>
-                        <div class="comparison-side comparison-side-trainee">
-                            <div class="comparison-label">Trainee Output</div>
-                            <pre class="comparison-string">${highlightText(item.trainee, terms)}</pre>
-                        </div>
-                    </div>
-                    ${renderIssueChips(errors, terms, 'error-chip', 'error-field', 'error-text')}
-                    ${renderIssueChips(warnings, terms, 'warning-chip', 'warning-field', 'warning-text')}
-                </article>
-            `;
-        });
+        logHtml += `<div id="mismatchRowsHost"></div>`;
     }
 
     container.innerHTML = logHtml;
+    if (rows.length) {
+        const host = document.getElementById("mismatchRowsHost");
+        appendHtmlInChunks(
+            host,
+            orderedRows,
+            ({ item, index, searchMatched }) => buildMismatchCardHtml(item, index, terms, query, searchMatched),
+            () => mismatchRenderToken,
+            token
+        );
+    }
 }
 
 function renderAuditSection() {
@@ -694,19 +1044,29 @@ function renderAuditSection() {
         `;
         return;
     }
-    const indexedRows = rows.map((row, index) => ({ row, index }));
-    const matchedCount = indexedRows.filter(({ row }) => rowMatchesQuery([
-        row.status || '',
-        row.gold || '',
-        row.trainee || '',
-        JSON.stringify(row.errors || {}),
-        JSON.stringify(row.warnings || {})
-    ], terms)).length;
+    const indexedRows = rows.map((row, index) => {
+        const searchMatched = rowMatchesQuery([
+            row.status || '',
+            row.gold || '',
+            row.trainee || '',
+            JSON.stringify(row.errors || {}),
+            JSON.stringify(row.warnings || {})
+        ], terms);
+        return { row, index, searchMatched };
+    });
+    const matchedCount = indexedRows.filter(({ searchMatched }) => searchMatched).length;
+    const orderedRows = query
+        ? [
+            ...indexedRows.filter(({ searchMatched }) => searchMatched),
+            ...indexedRows.filter(({ searchMatched }) => !searchMatched)
+        ]
+        : indexedRows;
 
     meta.textContent = query
-        ? `${matchedCount} of ${rows.length} row(s) matched "${query}". Showing all rows.`
+        ? `${matchedCount} of ${rows.length} row(s) matched "${query}". Matched rows are shown first; others stay below.`
         : `Showing all ${rows.length} row(s).`;
 
+    const token = ++auditRenderToken;
     let auditHtml = `
         <div class="comparison-header mb-3">
             <h3 class="comparison-title m-0">String Audit</h3>
@@ -722,43 +1082,20 @@ function renderAuditSection() {
             </div>
         `;
     } else {
-        indexedRows.forEach(({ row, index }) => {
-            const status = row.status || 'matched';
-            const errors = Object.entries(row.errors || {});
-            const warnings = Object.entries(row.warnings || {});
-            const isMatch = rowMatchesQuery([
-                row.status || '',
-                row.gold || '',
-                row.trainee || '',
-                JSON.stringify(row.errors || {}),
-                JSON.stringify(row.warnings || {})
-            ], terms);
-            const searchClass = query ? (isMatch ? " search-hit" : " search-muted") : "";
-
-            auditHtml += `
-                <article class="audit-card audit-${status}${searchClass} mb-3">
-                    <div class="audit-head">
-                        <span class="audit-index">Row #${index + 1}</span>
-                        <span class="audit-status">${highlightText(status.toUpperCase(), terms)}</span>
-                    </div>
-                    <div class="comparison-grid">
-                        <div class="comparison-side comparison-side-gold">
-                            <div class="comparison-label">Gold</div>
-                            <pre class="comparison-string">${highlightText(row.gold ?? '(none)', terms)}</pre>
-                        </div>
-                        <div class="comparison-side comparison-side-trainee">
-                            <div class="comparison-label">Trainee</div>
-                            <pre class="comparison-string">${highlightText(row.trainee ?? '(none)', terms)}</pre>
-                        </div>
-                    </div>
-                    ${renderIssueChips(errors, terms, 'error-chip', 'error-field', 'error-text')}
-                    ${renderIssueChips(warnings, terms, 'warning-chip', 'warning-field', 'warning-text')}
-                </article>
-            `;
-        });
+        auditHtml += `<div id="auditRowsHost"></div>`;
     }
 
     container.innerHTML = auditHtml;
+    if (rows.length) {
+        const host = document.getElementById("auditRowsHost");
+        appendHtmlInChunks(
+            host,
+            orderedRows,
+            ({ row, index, searchMatched }) => buildAuditCardHtml(row, index, terms, query, searchMatched),
+            () => auditRenderToken,
+            token
+        );
+    }
 }
 
 function applyAuditFilter() {
@@ -767,6 +1104,242 @@ function applyAuditFilter() {
 
 function applyCheckerFilter() {
     renderMismatchSection();
+}
+
+function getAttributeExplorerEntries() {
+    const library = (attributeStringLibrary && typeof attributeStringLibrary === "object")
+        ? attributeStringLibrary
+        : {};
+
+    return Object.values(library)
+        .map((entry) => {
+            const code = String(entry.code || "");
+            const label = String(entry.label || attributeLabel(code));
+            const teams = entry.teams || {};
+            const teamTotals = {};
+
+            EXPLORER_TEAM_ORDER.forEach((team) => {
+                const teamGroup = teams[team] || {};
+                teamTotals[team] = Number((teamGroup.gold || []).length) + Number((teamGroup.trainee || []).length);
+            });
+
+            return {
+                code,
+                label,
+                gold_total: Number(entry.gold_total || 0),
+                trainee_total: Number(entry.trainee_total || 0),
+                teams,
+                teamTotals,
+                combinedTotal: Number(entry.gold_total || 0) + Number(entry.trainee_total || 0),
+            };
+        })
+        .filter((entry) => entry.code && entry.combinedTotal > 0)
+        .sort((a, b) => {
+            if (b.combinedTotal !== a.combinedTotal) return b.combinedTotal - a.combinedTotal;
+            return attributeLabel(a.code).localeCompare(attributeLabel(b.code));
+        });
+}
+
+function buildAttributeExplorerCard(entry, isActive) {
+    const teamA = Number(entry.teamTotals.A || 0);
+    const teamB = Number(entry.teamTotals.B || 0);
+    const other = Number(entry.teamTotals.OTHER || 0);
+    const otherHtml = other > 0
+        ? `<span class="attribute-explorer-team-pill is-other">Other ${other.toLocaleString()}</span>`
+        : "";
+
+    return `
+        <button
+            type="button"
+            class="attribute-explorer-card${isActive ? " is-active" : ""}"
+            data-attribute-code="${escapeHtml(entry.code)}"
+            aria-pressed="${isActive ? "true" : "false"}"
+        >
+            <div class="attribute-explorer-card-top">
+                <span class="attribute-explorer-card-code">${escapeHtml(entry.code)}</span>
+                <span class="attribute-explorer-card-total">${entry.combinedTotal.toLocaleString()}</span>
+            </div>
+            <div class="attribute-explorer-card-title">${escapeHtml(attributeLabel(entry.code))}</div>
+            <div class="attribute-explorer-card-stats">
+                <span>Gold ${entry.gold_total.toLocaleString()}</span>
+                <span>Trainee ${entry.trainee_total.toLocaleString()}</span>
+            </div>
+            <div class="attribute-explorer-card-teams">
+                <span class="attribute-explorer-team-pill">Team A ${teamA.toLocaleString()}</span>
+                <span class="attribute-explorer-team-pill is-b">Team B ${teamB.toLocaleString()}</span>
+                ${otherHtml}
+            </div>
+        </button>
+    `;
+}
+
+function buildAttributeExplorerSourcePanel(attributeCode, teamCode, sourceKey, items) {
+    const sourceLabel = sourceKey === "gold" ? "Gold Strings" : "Trainee Strings";
+    const emptyText = `No ${sourceKey} strings tagged for ${teamLabel(teamCode)}.`;
+
+    if (!items.length) {
+        return `
+            <article class="attribute-explorer-source-panel is-${sourceKey}">
+                <div class="attribute-explorer-source-head">
+                    <div>
+                        <div class="attribute-explorer-source-label">${escapeHtml(sourceLabel)}</div>
+                        <div class="attribute-explorer-source-sub">${escapeHtml(teamLabel(teamCode))}</div>
+                    </div>
+                    <span class="attribute-explorer-source-count">0</span>
+                </div>
+                <div class="attribute-explorer-source-empty">${escapeHtml(emptyText)}</div>
+            </article>
+        `;
+    }
+
+    const rowsHtml = items.map((item, index) => {
+        const noteLabel = SPECIAL_PRESENCE_ACTIONS.has(attributeCode)
+            ? attributeCode
+            : `${attributeCode}-${String(item.note || "?")}`;
+        const metaBits = [
+            item.player ? `<span>${escapeHtml(item.player)}</span>` : "",
+            item.timestamp ? `<span>${escapeHtml(item.timestamp)}</span>` : "",
+            noteLabel ? `<span>${escapeHtml(noteLabel)}</span>` : "",
+            item.foot && item.foot !== "X" ? `<span>${escapeHtml(item.foot)}</span>` : "",
+            item.special_action && item.special_action !== "X" && item.special_action !== attributeCode
+                ? `<span>${escapeHtml(item.special_action)}</span>`
+                : "",
+        ].filter(Boolean).join("");
+
+        return `
+            <article class="attribute-explorer-string-card">
+                <div class="attribute-explorer-string-head">
+                    <span class="attribute-explorer-string-index">#${index + 1}</span>
+                    <span class="attribute-explorer-string-meta">${metaBits}</span>
+                </div>
+                <pre class="attribute-explorer-string-raw">${escapeHtml(item.raw || "")}</pre>
+            </article>
+        `;
+    }).join("");
+
+    return `
+        <article class="attribute-explorer-source-panel is-${sourceKey}">
+            <div class="attribute-explorer-source-head">
+                <div>
+                    <div class="attribute-explorer-source-label">${escapeHtml(sourceLabel)}</div>
+                    <div class="attribute-explorer-source-sub">${escapeHtml(teamLabel(teamCode))}</div>
+                </div>
+                <span class="attribute-explorer-source-count">${items.length.toLocaleString()}</span>
+            </div>
+            <div class="attribute-explorer-source-list">
+                ${rowsHtml}
+            </div>
+        </article>
+    `;
+}
+
+function buildAttributeExplorerTeamBoard(entry, teamCode) {
+    const teamGroup = entry.teams[teamCode] || {};
+    const goldItems = Array.isArray(teamGroup.gold) ? teamGroup.gold : [];
+    const traineeItems = Array.isArray(teamGroup.trainee) ? teamGroup.trainee : [];
+    const total = goldItems.length + traineeItems.length;
+
+    return `
+        <section class="attribute-explorer-team-board team-${escapeHtml(teamCode.toLowerCase())}">
+            <div class="attribute-explorer-team-head">
+                <div>
+                    <div class="attribute-explorer-team-title">${escapeHtml(teamLabel(teamCode))}</div>
+                    <div class="attribute-explorer-team-sub">Gold ${goldItems.length.toLocaleString()} | Trainee ${traineeItems.length.toLocaleString()}</div>
+                </div>
+                <span class="attribute-explorer-team-total">${total.toLocaleString()} tagged</span>
+            </div>
+            <div class="attribute-explorer-source-grid">
+                ${buildAttributeExplorerSourcePanel(entry.code, teamCode, "gold", goldItems)}
+                ${buildAttributeExplorerSourcePanel(entry.code, teamCode, "trainee", traineeItems)}
+            </div>
+        </section>
+    `;
+}
+
+function renderAttributeExplorerSection() {
+    const listNode = document.getElementById("attributeExplorerList");
+    const detailNode = document.getElementById("attributeExplorerDetail");
+    if (!listNode || !detailNode) return;
+
+    if (!hasEvaluationRun) {
+        listNode.innerHTML = `
+            <div class="attribute-explorer-empty-state">
+                <div class="attribute-explorer-empty-title">No attribute data yet</div>
+                <div class="attribute-explorer-empty-sub">Run an evaluation to unlock the attribute explorer.</div>
+            </div>
+        `;
+        detailNode.innerHTML = `
+            <div class="attribute-explorer-detail-empty">
+                <div class="attribute-explorer-empty-title">Select an attribute after evaluation</div>
+                <div class="attribute-explorer-empty-sub">This panel will show Team A and Team B strings for both Gold and Trainee.</div>
+            </div>
+        `;
+        return;
+    }
+
+    const entries = getAttributeExplorerEntries();
+    if (!entries.length) {
+        listNode.innerHTML = `
+            <div class="attribute-explorer-empty-state">
+                <div class="attribute-explorer-empty-title">No tagged attributes available</div>
+                <div class="attribute-explorer-empty-sub">The current evaluation did not produce attribute-level string groups.</div>
+            </div>
+        `;
+        detailNode.innerHTML = `
+            <div class="attribute-explorer-detail-empty">
+                <div class="attribute-explorer-empty-title">No attribute strings to display</div>
+                <div class="attribute-explorer-empty-sub">Try another evaluation run with valid tagged strings.</div>
+            </div>
+        `;
+        return;
+    }
+
+    if (!selectedAttributeExplorerCode || !entries.some((entry) => entry.code === selectedAttributeExplorerCode)) {
+        selectedAttributeExplorerCode = entries[0].code;
+    }
+
+    const selected = entries.find((entry) => entry.code === selectedAttributeExplorerCode) || entries[0];
+    selectedAttributeExplorerCode = selected.code;
+
+    listNode.innerHTML = entries.map((entry) => buildAttributeExplorerCard(entry, entry.code === selected.code)).join("");
+
+    const detailTeams = ["A", "B"];
+    if (Number(selected.teamTotals.OTHER || 0) > 0) {
+        detailTeams.push("OTHER");
+    }
+    const teamBoardsHtml = detailTeams.map((teamCode) => buildAttributeExplorerTeamBoard(selected, teamCode)).join("");
+    const leadingTeam = (selected.teamTotals.A || 0) >= (selected.teamTotals.B || 0) ? "Team A" : "Team B";
+
+    detailNode.innerHTML = `
+        <div class="attribute-explorer-detail-hero">
+            <div>
+                <div class="attribute-explorer-kicker">Attribute Explorer</div>
+                <h3 class="attribute-explorer-detail-title">${escapeHtml(attributeLabel(selected.code))}</h3>
+                <p class="attribute-explorer-detail-sub">Raw strings grouped by team and source for fast analyst review. Leading volume: ${escapeHtml(leadingTeam)}.</p>
+            </div>
+            <div class="attribute-explorer-summary-grid">
+                <article class="attribute-explorer-summary-card is-gold">
+                    <span>Gold</span>
+                    <strong>${selected.gold_total.toLocaleString()}</strong>
+                </article>
+                <article class="attribute-explorer-summary-card is-trainee">
+                    <span>Trainee</span>
+                    <strong>${selected.trainee_total.toLocaleString()}</strong>
+                </article>
+                <article class="attribute-explorer-summary-card">
+                    <span>Team A</span>
+                    <strong>${Number(selected.teamTotals.A || 0).toLocaleString()}</strong>
+                </article>
+                <article class="attribute-explorer-summary-card">
+                    <span>Team B</span>
+                    <strong>${Number(selected.teamTotals.B || 0).toLocaleString()}</strong>
+                </article>
+            </div>
+        </div>
+        <div class="attribute-explorer-team-stack">
+            ${teamBoardsHtml}
+        </div>
+    `;
 }
 
 function setInsightsLoading(isLoading) {
@@ -906,23 +1479,38 @@ document.querySelectorAll(".sidebar-link[data-view]").forEach((link) => {
 });
 
 document.addEventListener("click", (event) => {
-    const target = event.target.closest(".btn, .key-action-link, .attribute-mini-card, .insight-chip");
+    const target = event.target.closest(".btn, .key-action-link, .attribute-mini-card, .insight-chip, .attribute-explorer-card");
     if (!target) return;
     animateTapFeedback(target);
 });
 
+document.addEventListener("click", (event) => {
+    const card = event.target.closest(".attribute-explorer-card");
+    if (!card) return;
+
+    const nextCode = card.getAttribute("data-attribute-code") || "";
+    if (!nextCode || nextCode === selectedAttributeExplorerCode) return;
+
+    selectedAttributeExplorerCode = nextCode;
+    renderAttributeExplorerSection();
+    if (activeView === "attribute-explorer") {
+        animateSidebarView("attribute-explorer");
+    }
+});
+
 const checkerSearchInput = document.getElementById("checkerSearchInput");
 if (checkerSearchInput) {
-    checkerSearchInput.addEventListener("input", applyCheckerFilter);
+    checkerSearchInput.addEventListener("input", debounce(applyCheckerFilter, 180));
 }
 
 const auditSearchInput = document.getElementById("auditSearchInput");
 if (auditSearchInput) {
-    auditSearchInput.addEventListener("input", applyAuditFilter);
+    auditSearchInput.addEventListener("input", debounce(applyAuditFilter, 180));
 }
 
 renderMismatchSection();
 renderAuditSection();
+renderAttributeExplorerSection();
 
 if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", () => {
@@ -939,7 +1527,7 @@ document.getElementById("uploadForm").addEventListener("submit", async function(
     setInsightsLoading(true);
 
     try {
-        const formData = new URLSearchParams(new FormData(this));
+        const formData = new FormData(this);
         const response = await fetch("/evaluate", { method: "POST", body: formData });
         const data = await response.json();
 
@@ -961,6 +1549,10 @@ document.getElementById("uploadForm").addEventListener("submit", async function(
         attributeTeamNoteBreakdown = (data.attribute_team_note_breakdown && typeof data.attribute_team_note_breakdown === "object")
             ? data.attribute_team_note_breakdown
             : {};
+        attributeStringLibrary = (data.attribute_string_library && typeof data.attribute_string_library === "object")
+            ? data.attribute_string_library
+            : {};
+        latestEvaluationData = data;
 
         document.getElementById("downloadPdf").style.display = "block";
 
@@ -1109,8 +1701,13 @@ document.getElementById("uploadForm").addEventListener("submit", async function(
         hasEvaluationRun = true;
         latestMismatchRows = Array.isArray(data.mismatched_details) ? data.mismatched_details : [];
         latestAlignmentRows = Array.isArray(data.alignment_rows) ? data.alignment_rows : [];
-        renderMismatchSection();
-        renderAuditSection();
+        if (activeView === "string-checker") {
+            renderMismatchSection();
+        } else if (activeView === "string-audit") {
+            renderAuditSection();
+        } else if (activeView === "attribute-explorer") {
+            renderAttributeExplorerSection();
+        }
         animateEvaluationRender();
     } catch (err) {
         alert("Unable to generate insights. Please try again.");
@@ -1130,16 +1727,7 @@ function renderCharts(data) {
     });
     charts = {};
 
-    const EC = {
-        mutedColor: '#7a96bb',
-        gridLine: 'rgba(120,160,210,0.12)',
-        tooltip: {
-            backgroundColor: '#0f1c2e',
-            borderColor: '#2a4060',
-            textStyle: { color: '#dceeff', fontSize: 13 }
-        },
-        legend: { textStyle: { color: '#a8c0dc', fontSize: 12 } }
-    };
+    const EC = getChartTheme();
 
     const pieEl = document.getElementById('pieChart');
     if (pieEl) {
@@ -1183,7 +1771,7 @@ function renderCharts(data) {
                     fontSize: 12
                 },
                 emphasis: {
-                    itemStyle: { shadowBlur: 18, shadowColor: 'rgba(0,0,0,0.5)' },
+                    itemStyle: { shadowBlur: 18, shadowColor: EC.pieShadow },
                     scale: true,
                     scaleSize: 6
                 },
@@ -1219,7 +1807,7 @@ function renderCharts(data) {
                 type: 'category',
                 data: fieldKeys,
                 axisLabel: { color: EC.mutedColor, rotate: 40, fontSize: 11 },
-                axisLine: { lineStyle: { color: '#2a4060' } },
+                axisLine: { lineStyle: { color: EC.axisLineColor } },
                 splitLine: { show: false }
             },
             yAxis: {
@@ -1242,7 +1830,7 @@ function renderCharts(data) {
                 label: {
                     show: true,
                     position: 'top',
-                    color: '#ffb3c2',
+                    color: EC.valueLabel,
                     fontSize: 11,
                     fontWeight: 'bold'
                 },
@@ -1280,7 +1868,7 @@ function renderCharts(data) {
                 nameGap: 32,
                 nameTextStyle: { color: EC.mutedColor, fontSize: 11 },
                 axisLabel: { color: EC.mutedColor, fontSize: 11 },
-                axisLine: { lineStyle: { color: '#2a4060' } },
+                axisLine: { lineStyle: { color: EC.axisLineColor } },
                 splitLine: { show: false }
             },
             yAxis: {
@@ -1299,11 +1887,11 @@ function renderCharts(data) {
                 data: timelineValues,
                 barMaxWidth: 36,
                 itemStyle: { borderRadius: [5, 5, 0, 0] },
-                emphasis: { itemStyle: { shadowBlur: 12, shadowColor: 'rgba(14,165,233,0.4)' } },
+                emphasis: { itemStyle: { shadowBlur: 12, shadowColor: EC.timelineShadow } },
                 label: {
                     show: true,
                     position: 'top',
-                    color: '#7dd3fc',
+                    color: EC.timelineValueLabel,
                     fontSize: 10,
                     fontWeight: 'bold',
                     formatter: (point) => point.value > 0 ? point.value : ''
@@ -1356,7 +1944,7 @@ function renderCharts(data) {
                 type: 'category',
                 data: attrDisplayLabels,
                 axisLabel: { color: EC.mutedColor, rotate: 60, fontSize: 10, interval: 0 },
-                axisLine: { lineStyle: { color: '#2a4060' } },
+                axisLine: { lineStyle: { color: EC.axisLineColor } },
                 splitLine: { show: false }
             },
             yAxis: {
@@ -1449,7 +2037,7 @@ function renderCharts(data) {
                     xAxis: {
                         type: 'category',
                         data: ['Gold', 'Trainee'],
-                        axisLabel: { color: '#a8c8f0', fontWeight: 'bold', fontSize: 12 },
+                        axisLabel: { color: EC.strongAxisLabel, fontWeight: 'bold', fontSize: 12 },
                         axisLine: { show: false },
                         axisTick: { show: false }
                     },
@@ -1486,7 +2074,7 @@ function renderCharts(data) {
                         label: {
                             show: true,
                             position: 'top',
-                            color: '#dbeeff',
+                            color: EC.miniValueLabel,
                             fontWeight: 'bold',
                             fontSize: 12,
                             formatter: (point) => point.value
@@ -1518,16 +2106,243 @@ function renderCharts(data) {
 }
 
 /* ---------- PDF Export ---------- */
-document.getElementById("downloadPdf").addEventListener("click", async function() {
+const PDF_TARGET_MIN_BYTES = 2 * 1024 * 1024;
+const PDF_TARGET_MAX_BYTES = 5 * 1024 * 1024;
+const PDF_TARGET_IDEAL_BYTES = 3.5 * 1024 * 1024;
+const PDF_MARGIN_MM = 6;
+const PDF_BLOCK_GAP_MM = 4;
+
+function createPdfDocument() {
     const { jsPDF } = window.jspdf;
-    const canvas = await html2canvas(document.getElementById('printable-content'), { scale: 2 });
-    const imgData = canvas.toDataURL('image/png');
+    const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4', compress: true });
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    return {
+        pdf,
+        margin: PDF_MARGIN_MM,
+        gap: PDF_BLOCK_GAP_MM,
+        usableWidth: pageWidth - (PDF_MARGIN_MM * 2),
+        usableHeight: pageHeight - (PDF_MARGIN_MM * 2),
+        currentY: PDF_MARGIN_MM
+    };
+}
 
-    const pdf = new jsPDF('p', 'mm', 'a4');
-    const pdfWidth = pdf.internal.pageSize.getWidth();
-    const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+function downscaleCanvas(sourceCanvas, maxWidth) {
+    if (!sourceCanvas || sourceCanvas.width <= maxWidth) {
+        return sourceCanvas;
+    }
 
-    pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-    pdf.save("StepOut_Evaluation.pdf");
+    const ratio = maxWidth / sourceCanvas.width;
+    const scaledCanvas = document.createElement('canvas');
+    scaledCanvas.width = Math.max(1, Math.round(sourceCanvas.width * ratio));
+    scaledCanvas.height = Math.max(1, Math.round(sourceCanvas.height * ratio));
+
+    const scaledContext = scaledCanvas.getContext('2d', { alpha: false });
+    scaledContext.imageSmoothingEnabled = true;
+    scaledContext.imageSmoothingQuality = 'high';
+    scaledContext.drawImage(sourceCanvas, 0, 0, scaledCanvas.width, scaledCanvas.height);
+
+    return scaledCanvas;
+}
+
+function addCanvasSliceToPdf(doc, sliceCanvas, jpegQuality, compressionMode) {
+    const imgData = sliceCanvas.toDataURL('image/jpeg', jpegQuality);
+    const imgHeightMm = (sliceCanvas.height * doc.usableWidth) / sliceCanvas.width;
+    doc.pdf.addImage(imgData, 'JPEG', doc.margin, doc.currentY, doc.usableWidth, imgHeightMm, undefined, compressionMode);
+    doc.currentY += imgHeightMm + doc.gap;
+}
+
+function addCanvasBlockToPdf(doc, sourceCanvas, jpegQuality, compressionMode) {
+    const blockHeightMm = (sourceCanvas.height * doc.usableWidth) / sourceCanvas.width;
+
+    if (blockHeightMm <= doc.usableHeight) {
+        if (doc.currentY > doc.margin && (doc.currentY + blockHeightMm) > (doc.margin + doc.usableHeight)) {
+            doc.pdf.addPage();
+            doc.currentY = doc.margin;
+        }
+        addCanvasSliceToPdf(doc, sourceCanvas, jpegQuality, compressionMode);
+        return;
+    }
+
+    if (doc.currentY > doc.margin) {
+        doc.pdf.addPage();
+        doc.currentY = doc.margin;
+    }
+
+    const pagePixelHeight = Math.floor((sourceCanvas.width * doc.usableHeight) / doc.usableWidth);
+    let offsetY = 0;
+
+    while (offsetY < sourceCanvas.height) {
+        const sliceHeight = Math.min(pagePixelHeight, sourceCanvas.height - offsetY);
+        const sliceCanvas = document.createElement('canvas');
+        sliceCanvas.width = sourceCanvas.width;
+        sliceCanvas.height = sliceHeight;
+        const sliceContext = sliceCanvas.getContext('2d', { alpha: false });
+        sliceContext.imageSmoothingEnabled = true;
+        sliceContext.imageSmoothingQuality = 'high';
+        sliceContext.drawImage(
+            sourceCanvas,
+            0,
+            offsetY,
+            sourceCanvas.width,
+            sliceHeight,
+            0,
+            0,
+            sourceCanvas.width,
+            sliceHeight
+        );
+
+        addCanvasSliceToPdf(doc, sliceCanvas, jpegQuality, compressionMode);
+        offsetY += sliceHeight;
+
+        if (offsetY < sourceCanvas.height) {
+            doc.pdf.addPage();
+            doc.currentY = doc.margin;
+        }
+    }
+}
+
+function getPrintableBlocks(targetNode) {
+    const blocks = [];
+    const sections = Array.from(targetNode.children).filter((section) => window.getComputedStyle(section).display !== 'none');
+
+    sections.forEach((section) => {
+        Array.from(section.children).forEach((child) => {
+            if (window.getComputedStyle(child).display === 'none') {
+                return;
+            }
+
+            if (["summary-section", "insights-section", "mismatch-section", "audit-section"].includes(child.id)) {
+                Array.from(child.children).forEach((nestedChild) => {
+                    if (window.getComputedStyle(nestedChild).display !== 'none' && nestedChild.getBoundingClientRect().height > 0) {
+                        blocks.push(nestedChild);
+                    }
+                });
+                return;
+            }
+
+            if (child.getBoundingClientRect().height > 0) {
+                blocks.push(child);
+            }
+        });
+    });
+
+    return blocks;
+}
+
+async function buildPdfFromBlocks(blocks, attempt) {
+    const doc = createPdfDocument();
+
+    for (const block of blocks) {
+        const canvas = await html2canvas(block, {
+            scale: attempt.scale,
+            backgroundColor: '#0c1628',
+            useCORS: true,
+            logging: false,
+            scrollX: 0,
+            scrollY: -window.scrollY,
+            width: block.scrollWidth || block.offsetWidth,
+            height: block.scrollHeight || block.offsetHeight,
+            windowWidth: document.documentElement.scrollWidth,
+            windowHeight: document.documentElement.scrollHeight
+        });
+        const optimizedCanvas = downscaleCanvas(canvas, attempt.maxWidth);
+        addCanvasBlockToPdf(doc, optimizedCanvas, attempt.quality, attempt.compression);
+    }
+
+    return doc.pdf;
+}
+
+async function createCompressedPdf(targetNode) {
+    const exportHeight = targetNode.scrollHeight || targetNode.offsetHeight || 0;
+    const blocks = getPrintableBlocks(targetNode);
+    if (!blocks.length) {
+        return null;
+    }
+    const attempts = exportHeight > 7000
+        ? [
+            { scale: 1.18, quality: 0.72, maxWidth: 1700, compression: 'MEDIUM' },
+            { scale: 1.04, quality: 0.64, maxWidth: 1500, compression: 'MEDIUM' },
+            { scale: 0.92, quality: 0.56, maxWidth: 1320, compression: 'MEDIUM' },
+            { scale: 0.82, quality: 0.48, maxWidth: 1160, compression: 'SLOW' },
+            { scale: 0.74, quality: 0.4, maxWidth: 1020, compression: 'SLOW' }
+        ]
+        : [
+            { scale: 1.36, quality: 0.78, maxWidth: 2200, compression: 'MEDIUM' },
+            { scale: 1.2, quality: 0.7, maxWidth: 1920, compression: 'MEDIUM' },
+            { scale: 1.06, quality: 0.62, maxWidth: 1660, compression: 'MEDIUM' },
+            { scale: 0.94, quality: 0.54, maxWidth: 1440, compression: 'SLOW' },
+            { scale: 0.82, quality: 0.46, maxWidth: 1240, compression: 'SLOW' }
+        ];
+
+    let bestUnderMax = null;
+    let smallestOverMax = null;
+
+    for (let index = 0; index < attempts.length; index += 1) {
+        const pdf = await buildPdfFromBlocks(blocks, attempts[index]);
+        const blob = pdf.output('blob');
+        const candidate = { pdf, size: blob.size };
+
+        if (blob.size >= PDF_TARGET_MIN_BYTES && blob.size <= PDF_TARGET_MAX_BYTES) {
+            return pdf;
+        }
+
+        if (blob.size <= PDF_TARGET_MAX_BYTES) {
+            if (!bestUnderMax || Math.abs(blob.size - PDF_TARGET_IDEAL_BYTES) < Math.abs(bestUnderMax.size - PDF_TARGET_IDEAL_BYTES)) {
+                bestUnderMax = candidate;
+            }
+            if (blob.size < PDF_TARGET_MIN_BYTES) {
+                break;
+            }
+            continue;
+        }
+
+        if (!smallestOverMax || blob.size < smallestOverMax.size) {
+            smallestOverMax = candidate;
+        }
+    }
+
+    return (bestUnderMax || smallestOverMax || {}).pdf || null;
+}
+
+async function exportPdfWithFilename(filename) {
+    const button = document.getElementById("downloadPdf");
+    const printableNode = document.getElementById('printable-content');
+    if (!printableNode || !button) return;
+
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = "Exporting...";
+
+    try {
+        const pdf = await createCompressedPdf(printableNode);
+        if (!pdf) {
+            throw new Error("PDF generation failed");
+        }
+        pdf.save(filename);
+    } catch (error) {
+        alert("Unable to export PDF right now. Please try again.");
+    } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+    }
+}
+
+document.getElementById("downloadPdf").addEventListener("click", function() {
+    showExportNameModal();
 });
+
+if (exportNameConfirm) {
+    exportNameConfirm.addEventListener("click", async () => {
+        const analystName = analystNameInput ? analystNameInput.value : "";
+        const filename = buildExportFilename(analystName);
+        try {
+            localStorage.setItem(STORAGE_KEYS.analystName, analystName);
+        } catch (err) {
+            // Ignore storage access errors silently.
+        }
+        hideExportNameModal();
+        await exportPdfWithFilename(filename);
+    });
+}
 
