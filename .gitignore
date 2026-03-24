@@ -4,3 +4,5 @@ venv/
 *.pyc
 instance/
 .vscode/
+node_modules/
+dist/
