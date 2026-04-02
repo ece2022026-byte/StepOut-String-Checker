@@ -1,5 +1,5 @@
-from comparator import compare_strings
-from parser import normalize, parse_string, validate_rulebook, ACTION_RULES, ACTION_DISPLAY_NAMES
+from .comparator import compare_strings
+from .parser import normalize, parse_string, validate_rulebook, ACTION_RULES, ACTION_DISPLAY_NAMES
 
 PASSING_ACTIONS = {"SP", "LP", "TB", "C", "XSP", "XLP", "XTB", "XC"}
 RECEIVER_ACTIONS = {a for a in ACTION_RULES.keys() if a.startswith("X")}

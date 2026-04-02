@@ -1,4 +1,4 @@
-from parser import parse_string, validate_rulebook
+from .parser import parse_string, validate_rulebook
 
 
 def convert_time_to_milliseconds(t: str) -> int:
