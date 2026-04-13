@@ -16,7 +16,7 @@ except Exception:  # pragma: no cover
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_SQLITE_DIR = Path(os.getenv("TMPDIR") or os.getenv("TEMP") or os.getenv("TMP") or BASE_DIR)
+DEFAULT_SQLITE_DIR = Path(os.getenv("TMPDIR") or os.getenv("TEMP") or os.getenv("TMP") or "/tmp")
 if os.getenv("VERCEL") and not os.getenv("DATABASE_URL"):
     DB_PATH = DEFAULT_SQLITE_DIR / "stepout.db"
 else:
@@ -88,6 +88,7 @@ def _connect() -> Iterator[Any]:
             yield connection
         return
 
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")

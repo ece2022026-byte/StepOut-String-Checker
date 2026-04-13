@@ -172,6 +172,16 @@ def home():
     return render_template("index.html")
 
 
+@app.route("/healthz")
+def healthcheck():
+    return jsonify(
+        {
+            "status": "ok",
+            "database": "postgres" if database.DATABASE_URL else "sqlite",
+        }
+    )
+
+
 @app.route("/api/trainees", methods=["GET"])
 def list_trainees_route():
     return jsonify({"trainees": database.list_trainees()})
