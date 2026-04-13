@@ -16,7 +16,11 @@ except Exception:  # pragma: no cover
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "stepout.db"
+DEFAULT_SQLITE_DIR = Path(os.getenv("TMPDIR") or os.getenv("TEMP") or os.getenv("TMP") or BASE_DIR)
+if os.getenv("VERCEL") and not os.getenv("DATABASE_URL"):
+    DB_PATH = DEFAULT_SQLITE_DIR / "stepout.db"
+else:
+    DB_PATH = BASE_DIR / "stepout.db"
 load_dotenv(BASE_DIR / ".env")
 load_dotenv(BASE_DIR / "backend" / ".env")
 
