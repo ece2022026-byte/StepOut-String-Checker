@@ -226,6 +226,9 @@ async function exportPdfWithFilename(filename) {
 }
 
 document.getElementById("downloadPdf").addEventListener("click", function() {
+    if (!hasEvaluationRun) {
+        return;
+    }
     showExportNameModal();
 });
 

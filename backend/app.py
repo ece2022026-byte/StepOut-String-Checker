@@ -219,16 +219,17 @@ def evaluate():
     gold_file = request.files.get("gold_file")
     trainee_file = request.files.get("trainee_file")
 
-    if not trainee_id_raw:
-        raise APIError("Select a trainee analyst before running evaluation.", 400)
-    try:
-        trainee_id = int(trainee_id_raw)
-    except ValueError as exc:
-        raise APIError("Invalid trainee analyst selection.", 400) from exc
+    trainee_id = None
+    trainee_record = None
+    if trainee_id_raw:
+        try:
+            trainee_id = int(trainee_id_raw)
+        except ValueError as exc:
+            raise APIError("Invalid trainee analyst selection.", 400) from exc
 
-    trainee_record = database.get_trainee(trainee_id)
-    if not trainee_record:
-        raise APIError("Selected trainee analyst was not found.", 404)
+        trainee_record = database.get_trainee(trainee_id)
+        if not trainee_record:
+            raise APIError("Selected trainee analyst was not found.", 404)
 
     if gold_file and gold_file.filename:
         gold_content = _read_uploaded_text(gold_file)
@@ -251,8 +252,12 @@ def evaluate():
         trainee_list,
         time_tolerance=TIME_TOLERANCE_MS,
     )
-    evaluation_run_id = database.save_evaluation_run(trainee_id, result)
+    evaluation_run_id = None
+    if trainee_id is not None:
+        evaluation_run_id = database.save_evaluation_run(trainee_id, result)
+
     result["evaluation_run_id"] = evaluation_run_id
+    result["run_saved"] = evaluation_run_id is not None
     result["trainee"] = trainee_record
     return jsonify(result)
 

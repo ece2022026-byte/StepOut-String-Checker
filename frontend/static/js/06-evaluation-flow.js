@@ -187,16 +187,16 @@ if (document.readyState === "loading") {
 document.getElementById("uploadForm").addEventListener("submit", async function(e) {
     e.preventDefault();
     const currentTraineeId = traineeSelect ? traineeSelect.value : selectedTraineeId;
-    if (!currentTraineeId) {
-        alert("Select a trainee analyst before running evaluation.");
-        return;
-    }
     setSelectedTrainee(currentTraineeId, { fetchReport: false });
     setInsightsLoading(true);
 
     try {
         const formData = new FormData(this);
-        formData.set("trainee_id", currentTraineeId);
+        if (currentTraineeId) {
+            formData.set("trainee_id", currentTraineeId);
+        } else {
+            formData.delete("trainee_id");
+        }
         const data = await parseApiResponse(
             await fetch("/evaluate", { method: "POST", body: formData }),
             "Evaluation failed."
@@ -220,7 +220,10 @@ document.getElementById("uploadForm").addEventListener("submit", async function(
             : {};
         latestEvaluationData = data;
 
-        document.getElementById("downloadPdf").style.display = "block";
+        const downloadPdfBtn = document.getElementById("downloadPdf");
+        if (downloadPdfBtn) {
+            downloadPdfBtn.disabled = false;
+        }
 
         document.getElementById("summary-section").innerHTML = `
         <div class="row g-3 mb-4 text-center">
@@ -381,7 +384,7 @@ document.getElementById("uploadForm").addEventListener("submit", async function(
         } else if (activeView === "progress-report") {
             renderProgressReportSection();
         }
-        await loadTrainees(currentTraineeId);
+        await loadTrainees(currentTraineeId || "");
         animateEvaluationRender();
     } catch (err) {
         alert(err.message || "Unable to generate insights. Please try again.");

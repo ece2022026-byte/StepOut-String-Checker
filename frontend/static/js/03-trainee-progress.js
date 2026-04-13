@@ -10,8 +10,8 @@ function updateTraineeQuickSummary() {
     if (!selected) {
         summaryNode.innerHTML = `
             <div class="trainee-selector-summary-kicker">History Status</div>
-            <div class="trainee-selector-summary-main">No trainee selected</div>
-            <div class="trainee-selector-summary-sub">Choose or create a trainee to start storing progress data.</div>
+            <div class="trainee-selector-summary-main">Temporary run mode</div>
+            <div class="trainee-selector-summary-sub">You can run evaluation without a trainee. Select one only when you want the result saved into progress history.</div>
         `;
         return;
     }
@@ -35,7 +35,7 @@ function populateTraineeSelects() {
     selects.forEach((select) => {
         const placeholder = select.id === "progressTraineeSelect"
             ? "Select trainee report"
-            : "Select trainee analyst";
+            : "Run without saving history";
         const currentValue = selectedTraineeId;
         select.innerHTML = `<option value="">${placeholder}</option>`;
         traineeDirectory.forEach((trainee) => {

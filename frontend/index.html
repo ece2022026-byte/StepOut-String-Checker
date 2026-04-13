@@ -62,7 +62,7 @@
                         <span id="themeToggleText" class="theme-toggle-text">Light Mode</span>
                     </span>
                 </button>
-                <button id="downloadPdf" class="btn btn-dark fw-bold px-4" style="display:none;">Export PDF</button>
+                <button id="downloadPdf" class="btn btn-dark fw-bold px-4" type="button" disabled>Export PDF</button>
             </div>
         </header>
 
@@ -74,17 +74,17 @@
                             <label class="form-label fw-bold">Trainee Analyst</label>
                             <div class="trainee-selector-row">
                                 <select id="traineeSelect" class="form-select trainee-select" name="trainee_id" aria-label="Select trainee analyst">
-                                    <option value="">Select trainee analyst</option>
+                                    <option value="">Run without saving history</option>
                                 </select>
                                 <button id="addTraineeBtn" type="button" class="btn btn-dark fw-bold trainee-add-btn">Add Trainee</button>
                             </div>
-                            <div class="form-text">Each saved evaluation is linked to the selected trainee so we can compare old runs with new ones.</div>
+                            <div class="form-text">Select a trainee to save progress history, or leave it blank to run a temporary analysis without storing the result.</div>
                         </div>
                         <div class="col-lg-4">
                             <div class="trainee-selector-summary" id="traineeQuickSummary">
                                 <div class="trainee-selector-summary-kicker">History Status</div>
-                                <div class="trainee-selector-summary-main">No trainee selected</div>
-                                <div class="trainee-selector-summary-sub">Choose or create a trainee to start storing progress data.</div>
+                                <div class="trainee-selector-summary-main">Temporary run mode</div>
+                                <div class="trainee-selector-summary-sub">Choose or create a trainee only when you want this evaluation saved into progress history.</div>
                             </div>
                         </div>
                     </div>
@@ -299,7 +299,7 @@
     </div>
 </div>
 
-<script type="module" src="{{ url_for('static', filename='app.js', v='20260413-js-split-1') }}"></script>
+<script type="module" src="{{ url_for('static', filename='app.js', v='20260413-optional-trainee-1') }}"></script>
 
 </body>
 </html>
