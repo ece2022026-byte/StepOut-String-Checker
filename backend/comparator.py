@@ -35,6 +35,24 @@ def _requires_strict_grid_check(main: dict, trainee: dict) -> bool:
     return any(v in strict_tokens for v in values)
 
 
+def _should_ignore_foot_mismatch(main: dict, trainee: dict) -> bool:
+    """
+    Relax foot comparison only for a normal SP-1 event.
+
+    This keeps the pair fully matched when both strings represent
+    SP-1 with no special action, even if the foot differs.
+    Special-action variants must still keep the foot mismatch error.
+    """
+    return (
+        str(main.get("action", "")).upper() == "SP"
+        and str(trainee.get("action", "")).upper() == "SP"
+        and str(main.get("attribute", "")) == "1"
+        and str(trainee.get("attribute", "")) == "1"
+        and str(main.get("special_action", "")).upper() == "X"
+        and str(trainee.get("special_action", "")).upper() == "X"
+    )
+
+
 def compare_strings(main_string: str, trainee_string: str, time_tolerance: int = 2000):
     try:
         main = parse_string(main_string)
@@ -84,12 +102,16 @@ def compare_strings(main_string: str, trainee_string: str, time_tolerance: int =
     # Z-axis fields are intentionally ignored for now.
     skip_keys = {"half_notation", "timestamp", "z_axis_1", "z_axis_2"}
     grid_keys = {"starting_grid", "end_grid"}
+    ignore_foot_mismatch = _should_ignore_foot_mismatch(main, trainee)
     for key in main:
         if key in skip_keys:
             continue
         if main[key] == trainee.get(key):
             matched += 1
         else:
+            if key == "foot" and ignore_foot_mismatch:
+                matched += 1
+                continue
             if key in grid_keys and not strict_grid_check:
                 matched += 1
                 warnings[f"{key}_deviation"] = {

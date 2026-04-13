@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -17,7 +17,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.2/anime.min.js"></script>
 
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260323-improvements-1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260413-js-split-1') }}">
 </head>
 
 <body class="bg-light" data-theme="dark">
@@ -40,6 +40,7 @@
             <a class="sidebar-link" href="#" data-view="string-checker">String Checker</a>
             <a class="sidebar-link" href="#" data-view="string-audit">String Audit</a>
             <a class="sidebar-link" href="#" data-view="attribute-explorer">Attribute Explorer</a>
+            <a class="sidebar-link" href="#" data-view="progress-report">Progress Report</a>
         </nav>
         <div class="sidebar-card">
             <div class="sidebar-card-title">Analyst Workspace</div>
@@ -68,6 +69,25 @@
         <section class="form-panel card border-0 shadow-sm mb-4">
             <div class="card-body">
                 <form id="uploadForm" enctype="multipart/form-data">
+                    <div class="row g-3 align-items-end mb-3">
+                        <div class="col-lg-8">
+                            <label class="form-label fw-bold">Trainee Analyst</label>
+                            <div class="trainee-selector-row">
+                                <select id="traineeSelect" class="form-select trainee-select" name="trainee_id" aria-label="Select trainee analyst">
+                                    <option value="">Select trainee analyst</option>
+                                </select>
+                                <button id="addTraineeBtn" type="button" class="btn btn-dark fw-bold trainee-add-btn">Add Trainee</button>
+                            </div>
+                            <div class="form-text">Each saved evaluation is linked to the selected trainee so we can compare old runs with new ones.</div>
+                        </div>
+                        <div class="col-lg-4">
+                            <div class="trainee-selector-summary" id="traineeQuickSummary">
+                                <div class="trainee-selector-summary-kicker">History Status</div>
+                                <div class="trainee-selector-summary-main">No trainee selected</div>
+                                <div class="trainee-selector-summary-sub">Choose or create a trainee to start storing progress data.</div>
+                            </div>
+                        </div>
+                    </div>
                     <div class="row">
                         <div class="col-md-6 mb-3">
                             <label class="form-label fw-bold">Gold Standard Strings</label>
@@ -181,6 +201,30 @@
                     </section>
                 </div>
             </section>
+
+            <section id="progressReportView" style="display:none;">
+                <div class="progress-report-shell mt-4">
+                    <div class="progress-report-toolbar">
+                        <div>
+                            <div class="attribute-explorer-kicker">Progress Report</div>
+                            <h3 class="progress-report-title">Trainee Performance History</h3>
+                            <p class="progress-report-sub">Track each analyst across saved runs, compare the latest result with older history, and review the generated report.</p>
+                        </div>
+                        <div class="progress-report-actions">
+                            <select id="progressTraineeSelect" class="form-select progress-report-select" aria-label="Select trainee progress report">
+                                <option value="">Select trainee analyst</option>
+                            </select>
+                            <button id="refreshProgressReport" type="button" class="btn btn-dark fw-bold px-3">Refresh</button>
+                        </div>
+                    </div>
+                    <div id="progressReportContent" class="progress-report-content">
+                        <div class="progress-report-empty">
+                            <div class="progress-report-empty-title">No trainee history selected</div>
+                            <div class="progress-report-empty-sub">Pick a trainee from the form or the report filter to load saved performance data.</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
         </div>
     </main>
 </div>
@@ -238,7 +282,24 @@
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='app.js', v='20260323-improvements-1') }}" defer></script>
+<div id="traineeCreateModal" class="export-name-modal trainee-create-modal" aria-hidden="true">
+    <div class="export-name-modal-card trainee-create-modal-card" role="dialog" aria-modal="true" aria-labelledby="traineeCreateTitle">
+        <button id="traineeCreateModalClose" class="attribute-count-close" type="button" aria-label="Close">x</button>
+        <div class="attribute-count-kicker">Trainee Directory</div>
+        <h4 id="traineeCreateTitle" class="attribute-count-title">Create Trainee Profile</h4>
+        <p class="trainee-create-copy">Add the analyst name once, and we will attach every future evaluation to that profile for progress tracking, history review, and comparison reports.</p>
+        <label for="traineeNameInput" class="form-label export-name-label">Trainee Analyst Name</label>
+        <input id="traineeNameInput" class="form-control export-name-input trainee-create-input" type="text" maxlength="80" placeholder="Example: Akashdip Chaudhuri">
+        <div id="traineeCreateHint" class="trainee-create-hint">Use the full analyst name so saved reports stay clean and easy to track.</div>
+        <div id="traineeCreateError" class="trainee-create-error" hidden></div>
+        <div class="export-name-actions trainee-create-actions">
+            <button id="traineeCreateCancel" class="btn btn-dark fw-bold px-4" type="button">Cancel</button>
+            <button id="traineeCreateConfirm" class="btn btn-primary fw-bold px-4" type="button">Create Trainee</button>
+        </div>
+    </div>
+</div>
+
+<script type="module" src="{{ url_for('static', filename='app.js', v='20260413-js-split-1') }}"></script>
 
 </body>
 </html>

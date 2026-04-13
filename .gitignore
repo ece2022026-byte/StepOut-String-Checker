@@ -6,3 +6,4 @@ instance/
 .vscode/
 node_modules/
 dist/
+stepout.db

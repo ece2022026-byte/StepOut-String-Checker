@@ -6,10 +6,21 @@ from io import BytesIO
 import os
 from pathlib import Path
 import re
+import sys
 from xml.etree import ElementTree as ET
 from zipfile import BadZipFile, ZipFile
 
-from . import evaluator, parser
+try:
+    from . import database
+    from . import evaluator
+    from . import parser
+except ImportError:
+    BASE_DIR = Path(__file__).resolve().parent.parent
+    if str(BASE_DIR) not in sys.path:
+        sys.path.insert(0, str(BASE_DIR))
+    from backend import database  # type: ignore[no-redef]
+    from backend import evaluator  # type: ignore[no-redef]
+    from backend import parser  # type: ignore[no-redef]
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -26,6 +37,7 @@ MAX_REQUEST_BYTES = 5 * 1024 * 1024
 MAX_TEXT_INPUT_CHARS = 2_000_000
 MAX_PARSED_STRINGS = 20_000
 app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
+database.init_database()
 
 
 class APIError(Exception):
@@ -44,7 +56,7 @@ def _json_error(message, status_code, details=None):
 
 
 def _is_api_request():
-    return request.path.startswith("/evaluate")
+    return request.path.startswith("/evaluate") or request.path.startswith("/api/")
 
 
 def _extract_docx_text(file_bytes):
@@ -160,12 +172,53 @@ def home():
     return render_template("index.html")
 
 
+@app.route("/api/trainees", methods=["GET"])
+def list_trainees_route():
+    return jsonify({"trainees": database.list_trainees()})
+
+
+@app.route("/api/trainees", methods=["POST"])
+def create_trainee_route():
+    payload = request.get_json(silent=True) or request.form
+    name = str(payload.get("name", "")).strip()
+    if not name:
+        raise APIError("Trainee name is required.", 400)
+
+    try:
+        trainee, created = database.create_trainee(name)
+    except ValueError as exc:
+        raise APIError(str(exc), 400) from exc
+
+    status_code = 201 if created else 200
+    return jsonify({"trainee": trainee, "created": created}), status_code
+
+
+@app.route("/api/trainees/<int:trainee_id>/progress", methods=["GET"])
+def trainee_progress_route(trainee_id):
+    report = database.get_progress_report(trainee_id)
+    if not report:
+        raise APIError("Trainee not found.", 404)
+    return jsonify(report)
+
+
 @app.route("/evaluate", methods=["POST"])
 def evaluate():
+    trainee_id_raw = str(request.form.get("trainee_id", "")).strip()
     gold_content = request.form.get("gold_text", "")
     trainee_content = request.form.get("trainee_text", "")
     gold_file = request.files.get("gold_file")
     trainee_file = request.files.get("trainee_file")
+
+    if not trainee_id_raw:
+        raise APIError("Select a trainee analyst before running evaluation.", 400)
+    try:
+        trainee_id = int(trainee_id_raw)
+    except ValueError as exc:
+        raise APIError("Invalid trainee analyst selection.", 400) from exc
+
+    trainee_record = database.get_trainee(trainee_id)
+    if not trainee_record:
+        raise APIError("Selected trainee analyst was not found.", 404)
 
     if gold_file and gold_file.filename:
         gold_content = _read_uploaded_text(gold_file)
@@ -188,6 +241,9 @@ def evaluate():
         trainee_list,
         time_tolerance=TIME_TOLERANCE_MS,
     )
+    evaluation_run_id = database.save_evaluation_run(trainee_id, result)
+    result["evaluation_run_id"] = evaluation_run_id
+    result["trainee"] = trainee_record
     return jsonify(result)
 
 
