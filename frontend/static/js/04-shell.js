@@ -175,12 +175,25 @@ async function submitTraineeCreateModal() {
             "Unable to create trainee."
         );
         const createdTrainee = payload.trainee || null;
-        await loadTrainees(createdTrainee ? String(createdTrainee.id) : "");
-        if (createdTrainee) {
+        const localFallbackTrainee = ensureLocalTrainee(submitName);
+        await loadTrainees(createdTrainee ? String(createdTrainee.id) : (localFallbackTrainee ? localFallbackTrainee.id : ""));
+        const hasServerRecord = createdTrainee
+            && traineeDirectory.some((item) => String(item.id) === String(createdTrainee.id));
+
+        if (hasServerRecord) {
             setSelectedTrainee(createdTrainee.id, { fetchReport: true });
+        } else if (localFallbackTrainee) {
+            setSelectedTrainee(localFallbackTrainee.id, { fetchReport: true });
         }
         hideTraineeCreateModal();
     } catch (error) {
+        const localFallbackTrainee = ensureLocalTrainee(submitName);
+        if (localFallbackTrainee) {
+            await loadTrainees(localFallbackTrainee.id);
+            setSelectedTrainee(localFallbackTrainee.id, { fetchReport: true });
+            hideTraineeCreateModal();
+            return;
+        }
         showTraineeCreateError(error.message || "Unable to create trainee.");
         if (traineeCreateConfirm) {
             traineeCreateConfirm.disabled = false;

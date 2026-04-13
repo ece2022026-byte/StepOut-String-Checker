@@ -2,6 +2,91 @@
  * Trainee directory, selection, and progress report rendering
  */
 
+const LOCAL_TRAINEE_PREFIX = "local:";
+
+function isLocalTraineeId(traineeId) {
+    return String(traineeId || "").startsWith(LOCAL_TRAINEE_PREFIX);
+}
+
+function readLocalTrainees() {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEYS.localTrainees);
+        const parsed = JSON.parse(raw || "[]");
+        if (!Array.isArray(parsed)) {
+            return [];
+        }
+        return parsed
+            .filter((item) => item && item.id && item.name)
+            .map((item) => ({
+                id: String(item.id),
+                name: String(item.name),
+                created_at: item.created_at || null,
+                run_count: 0,
+                average_accuracy: 0,
+                latest_run_at: null,
+                latest_accuracy: null,
+                source: "local"
+            }));
+    } catch (error) {
+        return [];
+    }
+}
+
+function writeLocalTrainees(trainees) {
+    try {
+        localStorage.setItem(
+            STORAGE_KEYS.localTrainees,
+            JSON.stringify(
+                Array.isArray(trainees)
+                    ? trainees.map((item) => ({
+                        id: String(item.id),
+                        name: String(item.name),
+                        created_at: item.created_at || null
+                    }))
+                    : []
+            )
+        );
+    } catch (error) {
+        // Ignore storage access errors silently.
+    }
+}
+
+function ensureLocalTrainee(name) {
+    const normalizedName = String(name || "").trim().replace(/\s+/g, " ");
+    if (!normalizedName) return null;
+
+    const localTrainees = readLocalTrainees();
+    const existing = localTrainees.find((item) => item.name.toLowerCase() === normalizedName.toLowerCase());
+    if (existing) {
+        return existing;
+    }
+
+    const trainee = {
+        id: `${LOCAL_TRAINEE_PREFIX}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
+        name: normalizedName,
+        created_at: new Date().toISOString(),
+        source: "local"
+    };
+    localTrainees.push(trainee);
+    writeLocalTrainees(localTrainees);
+    return trainee;
+}
+
+function mergeTraineeDirectory(serverTrainees) {
+    const normalizedServer = Array.isArray(serverTrainees)
+        ? serverTrainees.map((item) => ({ ...item, source: "server" }))
+        : [];
+    const localTrainees = readLocalTrainees();
+    const knownServerNames = new Set(
+        normalizedServer.map((item) => String(item.name || "").trim().toLowerCase()).filter(Boolean)
+    );
+
+    return [
+        ...normalizedServer,
+        ...localTrainees.filter((item) => !knownServerNames.has(String(item.name || "").trim().toLowerCase()))
+    ];
+}
+
 function updateTraineeQuickSummary() {
     const summaryNode = document.getElementById("traineeQuickSummary");
     if (!summaryNode) return;
@@ -12,6 +97,15 @@ function updateTraineeQuickSummary() {
             <div class="trainee-selector-summary-kicker">History Status</div>
             <div class="trainee-selector-summary-main">Temporary run mode</div>
             <div class="trainee-selector-summary-sub">You can run evaluation without a trainee. Select one only when you want the result saved into progress history.</div>
+        `;
+        return;
+    }
+
+    if (selected.source === "local" || isLocalTraineeId(selected.id)) {
+        summaryNode.innerHTML = `
+            <div class="trainee-selector-summary-kicker">History Status</div>
+            <div class="trainee-selector-summary-main">${escapeHtml(selected.name)}</div>
+            <div class="trainee-selector-summary-sub">Local-only profile on this browser. You can use the name in the selector, but progress history is not being saved on the current deployment.</div>
         `;
         return;
     }
@@ -41,9 +135,13 @@ function populateTraineeSelects() {
         traineeDirectory.forEach((trainee) => {
             const option = document.createElement("option");
             option.value = String(trainee.id);
-            option.textContent = trainee.run_count
-                ? `${trainee.name} - ${trainee.run_count} run${trainee.run_count === 1 ? "" : "s"}`
-                : `${trainee.name} - New`;
+            if (trainee.source === "local" || isLocalTraineeId(trainee.id)) {
+                option.textContent = `${trainee.name} - Local only`;
+            } else {
+                option.textContent = trainee.run_count
+                    ? `${trainee.name} - ${trainee.run_count} run${trainee.run_count === 1 ? "" : "s"}`
+                    : `${trainee.name} - New`;
+            }
             select.appendChild(option);
         });
         select.value = currentValue && traineeDirectory.some((item) => String(item.id) === String(currentValue))
@@ -86,7 +184,7 @@ function setSelectedTrainee(traineeId, options = {}) {
 async function loadTrainees(preferredTraineeId = "") {
     try {
         const payload = await parseApiResponse(await fetch("/api/trainees"), "Unable to load trainee list.");
-        traineeDirectory = Array.isArray(payload.trainees) ? payload.trainees : [];
+        traineeDirectory = mergeTraineeDirectory(payload.trainees);
         const storedTraineeId = (() => {
             try {
                 return localStorage.getItem(STORAGE_KEYS.traineeId) || "";
@@ -108,6 +206,11 @@ async function loadTrainees(preferredTraineeId = "") {
             renderProgressReportSection();
         }
     } catch (error) {
+        traineeDirectory = mergeTraineeDirectory([]);
+        populateTraineeSelects();
+        if (selectedTraineeId && traineeDirectory.some((item) => String(item.id) === String(selectedTraineeId))) {
+            renderProgressReportSection();
+        }
         console.error(error);
     }
 }
@@ -134,6 +237,17 @@ function renderProgressReportSection() {
             <div class="progress-report-empty">
                 <div class="progress-report-empty-title">No trainee selected</div>
                 <div class="progress-report-empty-sub">Select a trainee to load saved runs and generated progress insights.</div>
+            </div>
+        `;
+        return;
+    }
+
+    const localSelection = traineeDirectory.find((item) => String(item.id) === String(selectedTraineeId));
+    if (localSelection && (localSelection.source === "local" || isLocalTraineeId(localSelection.id))) {
+        target.innerHTML = `
+            <div class="progress-report-empty">
+                <div class="progress-report-empty-title">Local-only trainee profile</div>
+                <div class="progress-report-empty-sub">${escapeHtml(localSelection.name)} is currently stored only in this browser. Progress history is unavailable on this deployment until a persistent database is connected.</div>
             </div>
         `;
         return;
@@ -369,6 +483,12 @@ function renderProgressTrendChart(report) {
 async function fetchProgressReport(traineeId, options = {}) {
     const { silent = false } = options;
     if (!traineeId) {
+        latestProgressReport = null;
+        renderProgressReportSection();
+        return;
+    }
+
+    if (isLocalTraineeId(traineeId)) {
         latestProgressReport = null;
         renderProgressReportSection();
         return;

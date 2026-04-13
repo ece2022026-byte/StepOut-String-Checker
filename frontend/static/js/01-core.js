@@ -77,6 +77,7 @@ const STORAGE_KEYS = {
     trainee: "stepout_trainee_text",
     analystName: "stepout_analyst_name",
     traineeId: "stepout_trainee_id",
+    localTrainees: "stepout_local_trainees",
     theme: "stepout_theme"
 };
 const SPECIAL_PRESENCE_ACTIONS = new Set(["FK", "OG", "CN", "GK", "F", "YC", "RC", "OFF", "HB", "PK"]);

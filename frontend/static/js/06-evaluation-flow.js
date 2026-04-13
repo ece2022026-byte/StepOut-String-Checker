@@ -192,7 +192,7 @@ document.getElementById("uploadForm").addEventListener("submit", async function(
 
     try {
         const formData = new FormData(this);
-        if (currentTraineeId) {
+        if (currentTraineeId && !isLocalTraineeId(currentTraineeId)) {
             formData.set("trainee_id", currentTraineeId);
         } else {
             formData.delete("trainee_id");
